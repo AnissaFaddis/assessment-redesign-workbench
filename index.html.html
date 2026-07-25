@@ -1,0 +1,1275 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Assessment Redesign Workbench</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script>
+tailwind.config = {
+  theme: { extend: {
+    colors: {
+      ground:'#F6F2EA', surface:'#FFFCF6', ink:'#2E2A25', muted:'#6C6257', line:'#E2D9CB',
+      well:{DEFAULT:'#37736C', soft:'#E0EDEA'},
+      part:{DEFAULT:'#8A7E60', soft:'#EFE9DA'},
+      open:{DEFAULT:'#A46C24', soft:'#F5E7D2'}
+    },
+    fontFamily: {
+      sans:['Seravek','Gill Sans Nova','Ubuntu','Calibri','DejaVu Sans','system-ui','sans-serif'],
+      serif:['Iowan Old Style','Palatino Linotype','Palatino','Georgia','serif']
+    }
+  }}
+}
+</script>
+<style>
+  body { -webkit-font-smoothing: antialiased; }
+  .fade { animation: fade .28s ease-out both; }
+  @keyframes fade { from { opacity:0; transform:translateY(4px);} to { opacity:1; transform:none;} }
+  @media (prefers-reduced-motion: reduce) { .fade{animation:none} *{transition:none !important} html{scroll-behavior:auto} }
+  :focus-visible { outline:2px solid #37736C; outline-offset:2px; border-radius:3px; }
+  summary { cursor:pointer; list-style:none; }
+  summary::-webkit-details-marker { display:none; }
+  details[open] .chev { transform: rotate(90deg); }
+  .chev { transition: transform .2s ease; display:inline-block; }
+  textarea { resize: vertical; }
+</style>
+</head>
+<body class="bg-ground text-ink font-sans">
+
+<header class="border-b border-line bg-surface/85 backdrop-blur sticky top-0 z-20">
+  <div class="max-w-[1400px] mx-auto px-6 py-3 flex items-center gap-4 flex-wrap">
+    <button onclick="goHome()" class="text-left">
+      <h1 class="font-serif text-xl leading-tight">Assessment Redesign Workbench</h1>
+      <p class="text-xs text-muted">For designing assessments students can\u2019t hand to a model</p>
+    </button>
+    <div class="flex-1"></div>
+    <p class="text-xs text-muted border border-line rounded-full px-3 py-1 bg-open-soft/50">Nothing is saved. Export before you close this tab.</p>
+    <button onclick="exportDoc(true)" class="text-sm border border-line rounded-md px-3 py-1.5 hover:bg-part-soft transition-colors">Export progress</button>
+  </div>
+</header>
+
+<main id="app" class="max-w-[1400px] mx-auto px-6 py-8"></main>
+
+<div id="modal" class="hidden"></div>
+
+<footer class="max-w-[1400px] mx-auto px-6 pb-10 pt-2 text-xs text-muted">
+  Runs entirely in this browser tab. No account, no storage, no analytics, no assignment text leaves this page.
+</footer>
+
+<script>
+/* =====================================================================
+   STATE — memory only. No localStorage / sessionStorage / cookies.
+   ===================================================================== */
+const state = {
+  screen:'landing', group:0,
+  context:{ subject:'', grade:'', course:'', assignment:'', position:'', time:'', goal:'' },
+  answers:{},
+  selected:[],          // move ids
+  specifics:{},          // moveId -> designer's authored text
+  draft:{ task:'', submission:'', media:'', criteria:'', ai:'', sequence:'' },
+  notes:'',
+  rawDraft:null,         // set if designer edits the assembled text directly
+  stress:{ output:'', verdict:'', satisfied:'', resisted:'' },
+  rubric:null,           // { criteria:[...] } once Mode B is entered
+  unit:{ subject:'', grade:'', duration:'', goals:'', items:[] },
+  nextAfterContext:'diagnostic',
+  touched:false
+};
+window.addEventListener('beforeunload', e => { if (state.touched) { e.preventDefault(); e.returnValue=''; } });
+
+/* =====================================================================
+   FRAMEWORK
+   ===================================================================== */
+const DIMS = {
+  P1:{tier:1,name:'Cognitive demand',why:'Generative models perform worst at the top of Bloom\u2019s range \u2014 analyze, evaluate, create \u2014 and worst of all when the task needs judgment about one particular situation rather than a general one.',
+      read:{WELL:'The task needs judgment a model can\u2019t supply from general knowledge.',PART:'The thinking is real, but a well-informed outsider could still land it.',OPEN:'The task can be satisfied with recall, summary, or a known procedure.'}},
+  P2:{tier:1,name:'Process visibility',why:'AI text arrives fully formed with no history. Staged checkpoints, revision logs, and decision logs make the intellectual journey the assessed object \u2014 and a journey is much harder to fabricate than an endpoint.',
+      read:{WELL:'The work is assessed as it develops, not only at the end.',PART:'Some process exists, but it isn\u2019t carrying assessment weight.',OPEN:'One submission at the end, with no record of how it got there.'}},
+  P3:{tier:1,name:'Modality and presence',why:'A recorded, unscripted explanation of one\u2019s own reasoning is a human-presence layer. Live work is off the table here; asynchronous video and audio satisfy this principle completely.',
+      read:{WELL:'The student\u2019s own voice or face is a required part of the evidence.',PART:'There\u2019s some range in format, but presence is optional.',OPEN:'Text only \u2014 exactly the medium a model produces natively.'}},
+  P4:{tier:1,name:'Metacognition',why:'Honest self-account \u2014 what was hard, where the AI\u2019s suggestion fell short, how the understanding shifted \u2014 is difficult to outsource, and it reinforces the learning while it documents it.',
+      read:{WELL:'Reflection is required and graded, including the student\u2019s AI use.',PART:'Reflection is invited but not weighted.',OPEN:'No account of the student\u2019s own thinking is required.'}},
+  P5:{tier:1,name:'Interconnection',why:'Isolated assignments can\u2019t be AI-proofed one at a time. Validity comes from coherence \u2014 later tasks consuming earlier student-produced evidence, so the chain has to hold together across a term.',
+      read:{WELL:'This task is structurally linked to work before or after it.',PART:'There are loose connections to other work.',OPEN:'This task stands alone, which makes it individually delegable.'}},
+  P6:{tier:2,name:'Local grounding',why:'A geographically scattered student body is an asset here: one prompt, and every student\u2019s own street, kitchen, or workplace yields data no model can fabricate.',
+      read:{WELL:'Firsthand local evidence is core to the task.',PART:'Local material is welcome but optional.',OPEN:'The work needs nothing from the student\u2019s actual surroundings.'}},
+  P7:{tier:2,name:'AI stance',why:'Assuming AI use and assessing how well the student interrogates it beats an unenforceable prohibition, and it prepares students for the work they\u2019re actually headed into.',
+      read:{WELL:'AI use is assigned and the student\u2019s critique of it is assessed.',PART:'AI use is permitted with disclosure.',OPEN:'The prompt is silent on AI, or bans it with no way to check.'}},
+  P8:{tier:2,name:'Socially situated',why:'Classmate collaboration is off the table here, but the underlying value survives: interview a neighbor, teach a concept to a sibling, gather real opinions. Social, unschedulable, unfabricatable.',
+      read:{WELL:'Interaction with a real person outside the LMS is required.',PART:'Such interaction is offered as an option.',OPEN:'The whole task can be completed alone at a keyboard.'}}
+};
+const BAND = { WELL:{label:'Well established',cls:'well',pos:'92%'}, PART:{label:'Partially present',cls:'part',pos:'54%'}, OPEN:{label:'Open opportunity',cls:'open',pos:'16%'} };
+
+/* =====================================================================
+   MOVE LIBRARY — 42 moves. Blocked moves are absent by construction.
+   ===================================================================== */
+const MOVES = [
+{id:'M1',p:'P1',t:'Escalate the verb',s:'Rewrite the core task from recall or explain to analyze, evaluate, or create.',
+ w:'The single cheapest structural change available. A summary task and an evaluation task can cover identical content while producing entirely different evidence \u2014 one asks what the field says, the other asks what the student concludes and why.',
+ q:'What is the new core verb, and what does the student now produce that they could not have produced by summarizing?'},
+{id:'M2',p:'P1',t:'Introduce a constrained design problem',s:'Give a problem with real tradeoffs and no clean answer.',
+ w:'Constraints that genuinely conflict force prioritization, and prioritization is a judgment call. A model will produce a defensible answer, but it can\u2019t defend it against your specific constraints without inventing them.',
+ q:'What are the competing constraints, and why can\u2019t all of them be satisfied at once?'},
+{id:'M3',p:'P1',t:'Critique a flawed exemplar',s:'Have students diagnose what\u2019s wrong with a deliberately weak example \u2014 including an AI-generated one.',
+ w:'Critique demands a standard, and articulating a standard is harder than meeting one. Using an AI-generated exemplar does double duty: students practice evaluation and learn what a model\u2019s output actually looks like.',
+ q:'What flawed exemplar will you supply, and what specifically should a strong critique catch in it?'},
+{id:'M4',p:'P1',t:'Position plus strongest counterargument',s:'Require a defensible position and the best case against it.',
+ w:'Steelmanning the opposition is where thin understanding shows. A student who can only argue one side has learned a conclusion, not a field.',
+ q:'What is the question they take a position on, and what counterargument would you consider the strongest one available?'},
+{id:'M5',p:'P1',t:'Apply to an unfamiliar case',s:'Require transfer to a case the course never covered.',
+ w:'Transfer is the difference between knowing a framework and being able to use it. Choosing a case that isn\u2019t in any textbook also means there\u2019s no existing analysis to retrieve.',
+ q:'What unfamiliar case will they apply this to, and what makes it a real test rather than a restatement?'},
+
+{id:'M6',p:'P2',t:'Stage into low-stakes checkpoints',s:'Break the work into a proposal, an outline, a draft, and a revision.',
+ w:'The foundational process move. Each checkpoint is evidence in its own right, and low stakes at each step encourages genuine iteration rather than a performance of iteration.',
+ q:'What does the student turn in first, and what would you look for in it? List each checkpoint and what it has to show.'},
+{id:'M7',p:'P2',t:'Require a revision log',s:'Document what changed between drafts and why.',
+ w:'A revision log is a record of thinking under pressure. It is specific to a particular draft and a particular piece of feedback, which makes it structurally hard to fabricate.',
+ q:'What should the revision log capture \u2014 what kinds of changes, and what counts as an adequate reason?'},
+{id:'M8',p:'P2',t:'Require a decision log',s:'Capture choices considered and rejected, with reasoning.',
+ w:'The rejected options are the interesting part. A model can produce a defensible path; it can\u2019t produce the path this student didn\u2019t take and explain why they turned away from it.',
+ q:'What decisions will this task actually force, and what should the log say about each one?'},
+{id:'M9',p:'P2',t:'Grade an annotated draft',s:'Assess a draft the student has marked up, not just the final artifact.',
+ w:'Annotation makes intent visible. A student explaining why a paragraph is there is doing something different from a student producing the paragraph.',
+ q:'What should the student annotate, and what makes an annotation substantive rather than decorative?'},
+{id:'M10',p:'P2',t:'Documented response to feedback',s:'Require evidence of what the student did with the feedback they received.',
+ w:'Feedback that disappears into the void teaches nothing. Requiring a documented response makes the feedback loop itself assessable.',
+ q:'What feedback will they receive, and what does an adequate documented response to it look like?'},
+{id:'M11',p:'P2',t:'Submit working notes and dead ends',s:'Require the messy material \u2014 source annotations, abandoned approaches.',
+ w:'Dead ends are the strongest single signal of genuine work, because there is no reason for a model to generate them and no easy way to fake having had one.',
+ q:'What working material should they keep, and how will you tell them to capture it as they go?'},
+
+{id:'M12',p:'P3',t:'Recorded oral defense',s:'A 3\u20135 minute unscripted video, with the defense prompt revealed at recording time.',
+ w:'The highest-yield move in this whole library for an asynchronous school. Revealing the prompt at recording time is what makes it work \u2014 it removes the window in which a script could be prepared.',
+ q:'What will the defense prompt ask, and what would tell you the student genuinely owns the reasoning?'},
+{id:'M13',p:'P3',t:'Screencast walkthrough',s:'The student narrates their own work on screen, explaining their choices.',
+ w:'Walking through your own artifact while explaining it requires a relationship with that artifact. Gaps show up immediately and are hard to talk around.',
+ q:'What should they walk through, and what choices should they be required to explain?'},
+{id:'M14',p:'P3',t:'Audio explainer or podcast',s:'Submit the work as a recorded audio piece for a stated audience.',
+ w:'Audio strips away visual polish and leaves reasoning and voice. A stated audience adds a real rhetorical constraint.',
+ q:'Who is the audience, how long should it run, and what has to be covered?'},
+{id:'M15',p:'P3',t:'Annotated visual artifact',s:'A flowchart, diagram, or concept map with narrated explanation.',
+ w:'Diagramming forces explicit relationships between ideas. Narrating the diagram forces the student to defend those relationships out loud.',
+ q:'What has to appear in the visual, and what should the narration explain about it?'},
+{id:'M16',p:'P3',t:'Physical model or artifact',s:'Build something, photograph it, and explain it.',
+ w:'A physical object exists in one place, and its photographs are unique to the student. The explanation ties the object back to course concepts.',
+ q:'What will they build, from what materials, and what does the explanation need to connect it to?'},
+{id:'M17',p:'P3',t:'Single-take recording requirement',s:'One component must be recorded in a single unedited take.',
+ w:'Editing is where a script gets smoothed in. A single take is a specific, checkable technical requirement that changes what the recording can be.',
+ q:'Which component is single-take, how long, and what should be visible or audible throughout?'},
+{id:'M18',p:'P3',t:'Handwritten work plus recorded explanation',s:'Photograph handwritten or whiteboard work alongside a recorded walkthrough.',
+ w:'Especially strong in mathematics and the sciences: the written trace shows the path, and the recording shows whether the student can account for it.',
+ q:'What work should be handwritten, and what should the recorded explanation cover?'},
+
+{id:'M19',p:'P4',t:'Graded reflection on the reasoning process',s:'Assess an account of how the thinking actually went.',
+ w:'Ungraded reflection gets skipped or performed. Grading it signals that the thinking is the object, not an afterthought attached to the product.',
+ q:'What specific questions will the reflection answer, and what distinguishes a strong one from a going-through-the-motions one?'},
+{id:'M20',p:'P4',t:'AI-use disclosure with critique',s:'Require students to say how they used AI and where its output fell short.',
+ w:'The critique half is what matters. Naming a specific place a model got something wrong requires having checked it against something the student actually knows.',
+ q:'What should they disclose, and what does a substantive critique of AI output look like in this subject?'},
+{id:'M21',p:'P4',t:'Before-and-after understanding statement',s:'What did you think at the start of this unit, and what do you think now?',
+ w:'This requires a real memory of a prior state. It also produces a record of conceptual change that you can use in later assessment.',
+ q:'What understanding should have shifted, and what should the statement address?'},
+{id:'M22',p:'P4',t:'Confidence and uncertainty mapping',s:'What do you still not know, and how do you know that?',
+ w:'Calibrated uncertainty is a hallmark of real understanding and something models are notably poor at. Students who don\u2019t understand the material can\u2019t locate its edges.',
+ q:'What should they map their confidence across, and how should they justify the uncertain parts?'},
+{id:'M23',p:'P4',t:'A moment you changed your mind',s:'Require an account of one specific point where the student\u2019s view shifted.',
+ w:'Highly specific and unfakeable in practice. It requires a particular moment, a particular prior belief, and a particular cause.',
+ q:'What kinds of mind-changing would you expect in this unit, and what should the account include?'},
+
+{id:'M24',p:'P5',t:'Consume earlier student-produced data',s:'This task takes as input something the student produced in an earlier assignment.',
+ w:'If the input is the student\u2019s own earlier output, the task cannot be completed by someone \u2014 or something \u2014 without access to it. This is the strongest structural link available.',
+ q:'Which earlier assignment produces the input, and how exactly does this task depend on it?'},
+{id:'M25',p:'P5',t:'Produce an artifact a later task requires',s:'The output here becomes structurally necessary input downstream.',
+ w:'Forward linkage raises the cost of a hollow submission: thin work here creates a visible problem for the student two assignments from now.',
+ q:'What does this task produce, and which later assignment can\u2019t proceed without it?'},
+{id:'M26',p:'P5',t:'Running portfolio thread',s:'Maintain a single accumulating artifact across the unit.',
+ w:'A portfolio thread makes coherence assessable across time. Inconsistency between entries is visible in a way it never is within a single submission.',
+ q:'What does the thread accumulate, and when do entries get added?'},
+{id:'M27',p:'P5',t:'Cross-task consistency check',s:'Later work must reconcile with claims made in earlier work.',
+ w:'Requiring reconciliation \u2014 including admitting a change of position \u2014 turns the chain itself into evidence.',
+ q:'Which earlier claims must be reconciled here, and what does adequate reconciliation look like?'},
+{id:'M28',p:'P5',t:'Revisit and revise earlier work',s:'Return to an earlier submission and revise it with new knowledge.',
+ w:'This makes learning visible as change over time, and it requires the student to have an actual relationship with what they submitted weeks ago.',
+ q:'Which earlier submission gets revisited, and what should the revision demonstrate?'},
+
+{id:'M29',p:'P6',t:'Site-specific data collection',s:'Students gather data from their own physical environment.',
+ w:'One prompt, and every student returns a different dataset. Because the students are scattered, the variation is automatic rather than something you have to engineer.',
+ q:'What will they measure or record, where, and using what protocol?'},
+{id:'M30',p:'P6',t:'Local issue analysis',s:'Apply course frameworks to something happening in the student\u2019s own community.',
+ w:'Local issues have specifics \u2014 names, histories, geography \u2014 that a model has no access to and will fabricate if pushed.',
+ q:'What kind of local issue counts here, and what course frameworks must the analysis apply?'},
+{id:'M31',p:'P6',t:'Personal experience as primary source',s:'Analyze a lived experience using course concepts.',
+ w:'The analysis is the assessed part, not the experience. This keeps the rigor while making the source material unavailable to anyone else.',
+ q:'What kind of experience is in scope, and what does the analysis have to do with it?'},
+{id:'M32',p:'P6',t:'Photograph and measure something nearby',s:'Document a physical thing within reach of the student.',
+ w:'A dated photograph of a specific object with the student\u2019s own measurements is evidence that cannot be generated. It also anchors abstract concepts to something real.',
+ q:'What should they photograph and measure, and what technical requirements apply to the images?'},
+{id:'M33',p:'P6',t:'Apply concepts to something from this week',s:'Connect course material to something the student encountered recently.',
+ w:'The recency constraint is doing the work: it requires something that happened after any model\u2019s knowledge of the world, in the student\u2019s own life.',
+ q:'What counts as an eligible encounter, and what must the connection demonstrate?'},
+
+{id:'M34',p:'P7',t:'Assign AI use and assess the critique',s:'Require AI use, then grade how well the student interrogates the output.',
+ w:'This converts an unenforceable rule into an assessable skill. The student who can\u2019t evaluate the output is the one this exposes.',
+ q:'What will you have them ask the model, and what should their critique of the response cover?'},
+{id:'M35',p:'P7',t:'Correct or improve AI output',s:'Students must fix AI-generated work and justify each change.',
+ w:'Correction requires a standard the student holds independently. Justifying each change is where that standard becomes visible.',
+ q:'What AI output will they work from, and what standard should their corrections meet?'},
+{id:'M36',p:'P7',t:'Compare your attempt against an AI attempt',s:'Analyze the gap between the student\u2019s own work and the model\u2019s.',
+ w:'This is metacognition and AI literacy in one move, and it produces something genuinely useful to the student: a clear sense of what they add.',
+ q:'What should they compare, and what should the gap analysis specifically address?'},
+{id:'M37',p:'P7',t:'Document the prompting process',s:'Require a record of prompts used and what the student changed.',
+ w:'Prompt iteration is itself a reasoning trace. What a student tried and rejected reveals their model of the problem.',
+ q:'What should the prompting record include, and how should they present it?'},
+
+{id:'M38',p:'P8',t:'Interview someone in the student\u2019s own life',s:'A family member, neighbor, or working professional \u2014 never a classmate.',
+ w:'A real interview produces a transcript no model has seen and no model could invent convincingly. It requires no scheduling with the school and no classmate dependency.',
+ q:'Who should they interview, what should they ask, and what has to be submitted as evidence?'},
+{id:'M39',p:'P8',t:'Observe a real setting',s:'Report on an actual place against course frameworks.',
+ w:'Direct observation produces particulars \u2014 what was actually there, at that hour, in that weather \u2014 that generic description never contains.',
+ q:'What kind of setting, for how long, and what should the observation record?'},
+{id:'M40',p:'P8',t:'Solicit feedback from a non-classmate',s:'Get a response from someone outside the course and document what was done with it.',
+ w:'Explaining work to someone who isn\u2019t in the course tests whether the student can actually communicate it. The documented response makes the loop assessable.',
+ q:'Who counts as an appropriate reader, what should you ask them for, and what should the student do with it?'},
+{id:'M41',p:'P8',t:'Teach the concept to someone',s:'Explain it to a person in their life and report what confused them.',
+ w:'The report on what confused the listener is the assessed part, and it is unfakeable in practice: it requires an actual person\u2019s actual confusion.',
+ q:'What concept do they teach, to whom, and what should the report on the confusion cover?'},
+{id:'M42',p:'P8',t:'Gather real opinions or small-sample data',s:'Collect responses from people the student knows.',
+ w:'A small real sample beats a large fabricated one for assessment purposes. The messiness is the point \u2014 real responses don\u2019t fit the framework cleanly.',
+ q:'What will they ask, of how many people, and how should the responses be recorded and analyzed?'}
+];
+const MEDIA_MOVES = ['M12','M13','M14','M15','M16','M17','M18'];
+const STAGED_MOVES = ['M6','M9','M10','M26','M28'];
+
+/* =====================================================================
+   DIAGNOSTIC
+   ===================================================================== */
+const GROUPS = [
+ {title:'What the student has to do', note:'Three questions about the thinking the task demands.', qs:[
+  {id:'q1',text:'Which verb best describes what the student must actually do?',type:'one',opts:[['recall','Recall or define'],['explain','Explain or summarize'],['apply','Apply a known procedure'],['analyze','Analyze or compare'],['evaluate','Evaluate or critique'],['create','Create something original']]},
+  {id:'q2',text:'How many defensible answers exist?',type:'one',opts:[['one','One correct answer'],['narrow','A narrow range of acceptable answers'],['many','Many defensible answers depending on the reasoning'],['open','An open design space with no predetermined answer']]},
+  {id:'q3',text:'Could a well-informed adult who never took your course produce an acceptable submission?',type:'one',opts:[['yes','Yes, easily'],['probably','Probably'],['partly','Only partly'],['no','No']]}]},
+ {title:'How the work becomes visible', note:'What you see between assigning it and receiving it.', qs:[
+  {id:'q4',text:'How many graded or reviewed touchpoints exist between assigning this and the final submission?',type:'one',opts:[['one','One \u2014 they submit once at the end'],['two','Two or three'],['four','Four or more']]},
+  {id:'q5',text:'Does the student submit evidence of how the work evolved \u2014 drafts, notes, a revision or decision log?',type:'one',opts:[['none','None'],['optional','Optional or ungraded'],['required','Required and graded']]},
+  {id:'q6',text:'If a final submission seemed disconnected from the student\u2019s earlier work, would you have an earlier artifact to compare it against?',type:'one',opts:[['no','No'],['informal','Informally'],['yes','Yes, a graded artifact exists']]}]},
+ {title:'What actually gets submitted', note:'The physical form of the evidence.', qs:[
+  {id:'q7',text:'What does the student submit? Select all that apply.',type:'many',opts:[['doc','Typed document'],['slides','Slides'],['video','Video'],['audio','Audio'],['image','Image or artwork'],['code','Code'],['physical','Photographed physical artifact'],['data','Spreadsheet or dataset'],['other','Something else']]},
+  {id:'q8',text:'Does the student\u2019s own voice or face appear anywhere in the submission?',type:'one',opts:[['no','No'],['optional','Optional'],['required','Required']]}]},
+ {title:'Accounting for their own thinking', note:'Two questions about reflection.', qs:[
+  {id:'q9',text:'Is the student required to reflect on their own reasoning process?',type:'one',opts:[['no','No'],['ungraded','Yes, but ungraded'],['graded','Yes, and it is graded']]},
+  {id:'q10',text:'Does the assignment require the student to describe how they used AI, or where AI output fell short?',type:'one',opts:[['no','No'],['encouraged','Encouraged but not required'],['required','Required']]}]},
+ {title:'What this task is attached to', note:'Its place in the sequence.', qs:[
+  {id:'q11',text:'Does this assignment consume data, artifacts, or feedback produced by an earlier assignment?',type:'one',opts:[['no','No'],['loosely','Loosely'],['directly','Yes, directly and necessarily']]},
+  {id:'q12',text:'Does a later assignment depend on what the student produces here?',type:'one',opts:[['no','No'],['loosely','Loosely'],['directly','Yes, directly and necessarily']]}]},
+ {title:'Where the material comes from', note:'One question.', qs:[
+  {id:'q13',text:'Does the work require data, observations, images, or experiences drawn from the student\u2019s own environment or life?',type:'one',opts:[['no','No'],['somewhat','Somewhat, or optional'],['core','Core to the task']]}]},
+ {title:'The stated position on AI', note:'One question.', qs:[
+  {id:'q14',text:'What is the assignment\u2019s current stated stance on AI use?',type:'one',opts:[['prohibited','Prohibited'],['silent','Silent or unstated'],['permitted','Permitted with disclosure'],['assessed','Required and assessed']]}]},
+ {title:'Other people', note:'One question.', qs:[
+  {id:'q15',text:'Does the work require interaction with a real person outside the LMS \u2014 an interview, an observation, feedback from someone in the student\u2019s life?',type:'one',opts:[['no','No'],['optional','Optional'],['required','Required']]}]},
+ {title:'Your read on it', note:'Not scored. This one is here so you can check your instinct against the structure.', qs:[
+  {id:'q16',text:'If a student pasted this assignment prompt into a current AI model with no other context, what would come back?',type:'one',opts:[['pass','A submission that would pass'],['light','Something needing light edits'],['insufficient','Something clearly insufficient'],['unsure','I\u2019m honestly not sure']]}]}
+];
+
+/* =====================================================================
+   SCORING
+   ===================================================================== */
+function score() {
+  const a = state.answers, b = {};
+  const down = x => x==='WELL' ? 'PART' : 'OPEN';
+  if (['recall','explain'].includes(a.q1)) b.P1='OPEN';
+  else if (a.q1==='apply' && ['one','narrow'].includes(a.q2)) b.P1='OPEN';
+  else if (['analyze','evaluate','create'].includes(a.q1) && ['partly','no'].includes(a.q3)) b.P1='WELL';
+  else b.P1='PART';
+
+  if (a.q4==='one' && a.q5==='none') b.P2='OPEN';
+  else if (a.q4!=='one' && a.q5==='required') b.P2='WELL';
+  else b.P2='PART';
+  if (a.q6==='no') b.P2 = down(b.P2);
+
+  const sub = a.q7||[], media = sub.includes('video')||sub.includes('audio');
+  const textOnly = sub.length>0 && sub.every(s => s==='doc'||s==='slides');
+  if (textOnly && a.q8==='no') b.P3='OPEN';
+  else if (media && a.q8==='required') b.P3='WELL';
+  else b.P3='PART';
+
+  if (a.q9==='no' && a.q10==='no') b.P4='OPEN';
+  else if (a.q9==='graded' && a.q10==='required') b.P4='WELL';
+  else b.P4='PART';
+
+  if (a.q11==='no' && a.q12==='no') b.P5='OPEN';
+  else if (a.q11==='directly'||a.q12==='directly') b.P5='WELL';
+  else b.P5='PART';
+
+  b.P6 = {no:'OPEN',somewhat:'PART',core:'WELL'}[a.q13];
+  b.P7 = {prohibited:'OPEN',silent:'OPEN',permitted:'PART',assessed:'WELL'}[a.q14];
+  b.P8 = {no:'OPEN',optional:'PART',required:'WELL'}[a.q15];
+  return b;
+}
+const CLAUSE = {
+  P1:'satisfiable with general knowledge rather than course-specific judgment',
+  P2:'assessed at a single endpoint, with no record of how the work developed',
+  P3:'submitted as text alone, with no student voice or face anywhere in it',
+  P4:'submitted without any account of the student\u2019s own reasoning',
+  P5:'standing on its own, unconnected to the work before or after it'
+};
+function headline(b) {
+  const open = ['P1','P2','P3','P4','P5'].filter(k=>b[k]==='OPEN');
+  if (!open.length) {
+    const part = ['P1','P2','P3','P4','P5'].filter(k=>b[k]==='PART');
+    return part.length
+      ? `This assignment is already carrying structural weight in several places. ${part.length} dimension${part.length>1?'s are':' is'} present but not yet load-bearing \u2014 that\u2019s where the leverage is.`
+      : 'Structurally, this one is in good shape. The moves below are about sharpening what\u2019s already working rather than adding.';
+  }
+  const list = open.map(k=>CLAUSE[k]);
+  const joined = list.length===1 ? list[0] : list.slice(0,-1).join('; ') + '; and ' + list[list.length-1];
+  const n = ['One','Two','Three','Four','Five'][open.length-1];
+  return `Right now this assignment is ${joined} \u2014 which means a strong AI submission would be hard to tell apart from a strong student one. ${n} change${open.length>1?'s':''} would shift that.`;
+}
+function calibration(b) {
+  const oc = ['P1','P2','P3','P4','P5'].filter(k=>b[k]==='OPEN').length, g = state.answers.q16;
+  if (g==='insufficient' && oc>=2) return 'You read this as AI-resistant, and the structure reads more open than that. Worth a look \u2014 the gap between those two is usually where the surprise lives.';
+  if (g==='pass' && oc===0) return 'You\u2019re harder on this one than its structure is. It may be doing more work than you\u2019re giving it credit for.';
+  if (g==='unsure') return 'You weren\u2019t sure what a model would return. Running the revised prompt through one yourself, cold, will answer that in about two minutes.';
+  return 'Your instinct and the structural read are pointing the same direction.';
+}
+
+/* =====================================================================
+   RENDER
+   ===================================================================== */
+const app = () => document.getElementById('app');
+const esc = s => String(s||'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const VIEWS = { landing:vLanding, context:vContext, diagnostic:vDiagnostic, profile:vProfile, moves:vMoves, author:vAuthor, draft:vDraft, stress:vStress, rubric:vRubric, unit:vUnit };
+function render(keepScroll) {
+  const y = window.scrollY;
+  app().innerHTML = VIEWS[state.screen]();
+  window.scrollTo({ top: keepScroll ? y : 0 });
+  const f = document.querySelector('[data-autofocus]'); if (f) f.focus();
+}
+function go(screen) { state.screen = screen; render(); }
+
+/* ---------- Landing ---------- */
+function vLanding() {
+  const card = (t,d,act,on) => `<button ${on?`onclick="${on}"`:'disabled'} class="text-left p-6 rounded-lg border ${on?'border-line bg-surface hover:border-well hover:shadow-sm':'border-line/60 bg-surface/40 cursor-not-allowed'} transition-all">
+    <h3 class="font-serif text-lg mb-1">${t}</h3><p class="text-sm text-muted leading-relaxed">${d}</p>
+    <p class="mt-4 text-xs uppercase tracking-wide ${on?'text-well':'text-muted/60'}">${act}</p></button>`;
+  return `<div class="fade">
+    <div class="max-w-2xl mb-10">
+      <p class="text-xs uppercase tracking-[0.15em] text-muted mb-3">Instructional design team</p>
+      <h2 class="font-serif text-3xl leading-snug mb-4">Your assignments didn\u2019t get worse. The ground moved underneath them.</h2>
+      <p class="text-muted leading-relaxed">Every student now works at home with unlimited access to a capable model, and there is no proctored room to retreat to. This tool helps you rebuild an assignment so that evidence of a student\u2019s thinking is <em>structurally required</em> rather than politely requested \u2014 in one working session, ending in a document you can use.</p>
+      <p class="text-muted leading-relaxed mt-3 text-sm">You will never paste the assignment here. You\u2019ll describe how it operates, and the tool does the diagnosing.</p>
+    </div>
+    <div class="grid gap-4 md:grid-cols-3 max-w-5xl">
+      ${card('Redesign an assignment','Describe how one existing assignment works, see where it\u2019s open, choose targeted moves, and write the new version.','Start \u2014 about 25 minutes','startMode(\'diagnostic\')')}
+      ${card('Build a rubric','Criteria that reward reasoning, firsthand evidence, and honest reflection instead of the polish a model supplies for free.','Start \u2014 about 10 minutes','startMode(\'rubric\')')}
+      ${card('Design a unit','Map a sequence of assessments, find the ones standing alone, and see which single one to fix first.','Start \u2014 about 15 minutes','go(\'unit\')')}
+    </div></div>`;
+}
+function goHome() {
+  if (state.touched && !confirm('Leave this session? Nothing here is saved.')) return;
+  Object.assign(state,{screen:'landing',group:0,answers:{},selected:[],specifics:{},notes:'',rawDraft:null,touched:false,
+    rubric:null, nextAfterContext:'diagnostic', stress:{output:'',verdict:'',satisfied:'',resisted:''},
+    unit:{subject:'',grade:'',duration:'',goals:'',items:[]},
+    context:{subject:'',grade:'',course:'',assignment:'',position:'',time:'',goal:''},
+    draft:{task:'',submission:'',media:'',criteria:'',ai:'',sequence:''}});
+  render();
+}
+
+/* ---------- Stepper ---------- */
+function stepper(n) {
+  const steps = ['Context','Diagnostic','Profile','Moves','Author','Draft','Stress test'];
+  return `<p class="text-xs uppercase tracking-[0.15em] text-muted mb-2">Step ${n} of 7 \u00b7 ${steps[n-1]}</p>`;
+}
+
+/* ---------- Step 1: context ---------- */
+const lbl = (id,label,hint,req) => `<label class="block mb-1 text-sm font-medium" for="${id}">${label}${req?' <span class="text-open">*</span>':' <span class="text-muted font-normal">(optional)</span>'}</label>${hint?`<p class="text-xs text-muted mb-2">${hint}</p>`:''}`;
+const sel = (id,arr) => arr.map(([v,l])=>`<option value="${v}" ${state.context[id]===v?'selected':''}>${l}</option>`).join('');
+function vContext() {
+  const c = state.context;
+  return `<div class="fade max-w-2xl">
+    ${stepper(1)}
+    <h2 class="font-serif text-2xl mb-2">Tell me where this assignment lives</h2>
+    <p class="text-muted text-sm mb-8 leading-relaxed">This shapes every suggestion that follows. Subject and grade are the only ones I need.</p>
+    <div class="bg-surface border border-line rounded-lg p-6 space-y-5">
+      <div>${lbl('subject','Subject or discipline','For example: AP Environmental Science, Spanish III, Welding I',true)}
+        <input id="subject" data-autofocus value="${esc(c.subject)}" oninput="setCtx('subject',this.value)" placeholder="AP Environmental Science" class="w-full border border-line rounded-md px-3 py-2 bg-ground/40 focus:bg-surface"></div>
+      <div class="grid sm:grid-cols-2 gap-5">
+        <div>${lbl('grade','Grade level','',true)}
+          <select id="grade" onchange="setCtx('grade',this.value)" class="w-full border border-line rounded-md px-3 py-2 bg-ground/40"><option value="">Choose\u2026</option>${sel('grade',[['9','9'],['10','10'],['11','11'],['12','12'],['mixed','Mixed']])}</select></div>
+        <div>${lbl('course','Course name','')}
+          <input id="course" value="${esc(c.course)}" oninput="setCtx('course',this.value)" class="w-full border border-line rounded-md px-3 py-2 bg-ground/40"></div>
+      </div>
+      <div>${lbl('assignment','What do you call this assignment?','Used for the filename and the export header \u2014 the title only, not the content')}
+        <input id="assignment" value="${esc(c.assignment)}" oninput="setCtx('assignment',this.value)" class="w-full border border-line rounded-md px-3 py-2 bg-ground/40"></div>
+      <div class="grid sm:grid-cols-2 gap-5">
+        <div>${lbl('position','Where this sits in the course','')}
+          <select id="position" onchange="setCtx('position',this.value)" class="w-full border border-line rounded-md px-3 py-2 bg-ground/40"><option value="">Choose\u2026</option>${sel('position',[['opening','Opening'],['early','Early'],['middle','Middle'],['late','Late'],['capstone','Capstone']])}</select></div>
+        <div>${lbl('time','Student time investment','')}
+          <select id="time" onchange="setCtx('time',this.value)" class="w-full border border-line rounded-md px-3 py-2 bg-ground/40"><option value="">Choose\u2026</option>${sel('time',[['<1','Under 1 hour'],['1-3','1\u20133 hours'],['3-8','3\u20138 hours'],['multi','Multi-week']])}</select></div>
+      </div>
+      <div>${lbl('goal','What you want students to actually be able to do','One or two sentences, in your own words')}
+        <textarea id="goal" rows="3" oninput="setCtx('goal',this.value)" class="w-full border border-line rounded-md px-3 py-2 bg-ground/40 leading-relaxed">${esc(c.goal)}</textarea></div>
+    </div>
+    <div class="flex items-center gap-4 mt-6">
+      <button onclick="continueFromContext()" class="bg-well text-white rounded-md px-5 py-2.5 text-sm hover:opacity-90">${state.nextAfterContext==='rubric'?'Build the rubric':'Start the diagnostic'}</button>
+      <span id="ctxErr" class="text-sm text-open"></span>
+      <button onclick="goHome()" class="ml-auto text-sm text-muted hover:text-ink">Back</button>
+    </div></div>`;
+}
+function setCtx(k,v){ state.context[k]=v; state.touched=true; }
+function startMode(next){ state.nextAfterContext=next; if(state.context.subject.trim()&&state.context.grade){ if(next==='rubric') seedRubric(); if(next==='diagnostic') state.group=0; go(next); } else go('context'); }
+function continueFromContext(){
+  if(!state.context.subject.trim()||!state.context.grade){ document.getElementById('ctxErr').textContent='Add a subject and grade and we\u2019re off.'; return; }
+  if(state.nextAfterContext==='rubric'){ seedRubric(); go('rubric'); return; }
+  state.screen='diagnostic'; state.group=0; render();
+}
+
+/* ---------- Step 2: diagnostic ---------- */
+function vDiagnostic() {
+  const g = GROUPS[state.group], pct = Math.round((state.group/GROUPS.length)*100);
+  const qs = g.qs.map(q=>{
+    const cur = state.answers[q.id];
+    if (q.type==='many') {
+      const c = cur||[];
+      return `<fieldset class="mb-8"><legend class="text-base mb-3 leading-snug">${q.text}</legend><div class="grid sm:grid-cols-2 gap-2">${q.opts.map(([v,l])=>`
+        <label class="flex items-center gap-3 border rounded-md px-3 py-2.5 cursor-pointer transition-colors ${c.includes(v)?'border-well bg-well-soft':'border-line bg-surface hover:border-muted/40'}">
+          <input type="checkbox" ${c.includes(v)?'checked':''} onchange="setMany('${q.id}','${v}',this.checked)" class="accent-[#37736C]"><span class="text-sm">${l}</span></label>`).join('')}</div></fieldset>`;
+    }
+    return `<fieldset class="mb-8"><legend class="text-base mb-3 leading-snug">${q.text}</legend><div class="space-y-2">${q.opts.map(([v,l])=>`
+      <label class="flex items-center gap-3 border rounded-md px-3 py-2.5 cursor-pointer transition-colors ${cur===v?'border-well bg-well-soft':'border-line bg-surface hover:border-muted/40'}">
+        <input type="radio" name="${q.id}" ${cur===v?'checked':''} onchange="setOne('${q.id}','${v}')" class="accent-[#37736C]"><span class="text-sm">${l}</span></label>`).join('')}</div></fieldset>`;
+  }).join('');
+  return `<div class="fade max-w-2xl">
+    <div class="mb-8"><div class="flex justify-between text-xs text-muted mb-2"><span>Step 2 of 7 \u00b7 Diagnostic</span><span>${state.group+1} of ${GROUPS.length}</span></div>
+      <div class="h-1 bg-line rounded-full overflow-hidden"><div class="h-full bg-well transition-all duration-300" style="width:${pct}%"></div></div></div>
+    <h2 class="font-serif text-2xl mb-1">${g.title}</h2><p class="text-muted text-sm mb-8">${g.note}</p>
+    ${qs}
+    <div class="flex items-center gap-3 pt-2 border-t border-line">
+      <button onclick="prevGroup()" class="text-sm text-muted hover:text-ink py-3">Back</button><div class="flex-1"></div>
+      <span id="qErr" class="text-sm text-open"></span>
+      <button onclick="nextGroup()" class="bg-well text-white rounded-md px-5 py-2.5 text-sm hover:opacity-90">${state.group===GROUPS.length-1?'See the profile':'Next'}</button>
+    </div>
+    <p class="text-xs text-muted mt-6 italic">These questions are descriptive on purpose. They ask how the assignment operates, not whether it\u2019s good \u2014 the reading is mine to make, not yours to confess.</p>
+  </div>`;
+}
+function setOne(id,v){ state.answers[id]=v; state.touched=true; render(true); }
+function setMany(id,v,on){ const c=state.answers[id]||[]; state.answers[id]= on?[...c,v]:c.filter(x=>x!==v); state.touched=true; render(true); }
+function prevGroup(){ if(state.group===0) state.screen='context'; else state.group--; render(); }
+function nextGroup(){
+  const g = GROUPS[state.group];
+  if (g.qs.some(q=>{const v=state.answers[q.id]; return q.type==='many'?!(v&&v.length):!v;})) {
+    document.getElementById('qErr').textContent='A couple of these are still blank.'; return;
+  }
+  if (state.group===GROUPS.length-1) state.screen='profile'; else state.group++;
+  render();
+}
+
+/* ---------- Persistent left column ---------- */
+function leftCol(b) {
+  const plan = state.selected.length
+    ? state.selected.map(id=>{ const m = MOVES.find(x=>x.id===id); const done = (state.specifics[id]||'').trim().length>0;
+        return `<div class="flex items-start gap-2 text-xs py-1.5 border-b border-line/60 last:border-0">
+          <span class="mt-0.5 ${done?'text-well':'text-muted/50'}" aria-hidden="true">${done?'\u25cf':'\u25cb'}</span>
+          <span class="flex-1">${m.t}<span class="sr-only">${done?' \u2014 written':' \u2014 not yet written'}</span></span>
+          <span class="text-muted/70">${m.p}</span></div>`;}).join('')
+    : '<p class="text-sm text-muted leading-relaxed">Empty for now. Moves you select will collect here and stay visible while you write.</p>';
+  return `<aside class="lg:w-[32%] lg:sticky lg:top-24 self-start space-y-4">
+    <div class="bg-surface border border-line rounded-lg p-5">
+      <p class="text-xs uppercase tracking-[0.15em] text-muted mb-3">This assignment</p>
+      <p class="font-serif text-lg leading-tight">${esc(state.context.assignment||state.context.course||state.context.subject)}</p>
+      <p class="text-sm text-muted">${esc(state.context.subject)} \u00b7 Grade ${esc(state.context.grade)}</p>
+      <div class="mt-4 pt-4 border-t border-line space-y-1.5">
+        ${Object.keys(DIMS).map(k=>`<div class="flex items-center gap-2 text-xs">
+          <span class="w-2 h-2 rounded-full bg-${BAND[b[k]].cls} shrink-0" aria-hidden="true"></span>
+          <span class="flex-1 truncate">${DIMS[k].name}</span><span class="text-muted">${BAND[b[k]].label}</span></div>`).join('')}
+      </div>
+    </div>
+    <div class="bg-surface border border-line rounded-lg p-5">
+      <p class="text-xs uppercase tracking-[0.15em] text-muted mb-3">Redesign plan${state.selected.length?` \u00b7 ${state.selected.length}`:''}</p>
+      ${plan}
+    </div>
+    <div class="text-xs text-muted px-1 leading-relaxed">
+      <button onclick="go('profile')" class="underline hover:text-ink">Profile</button> \u00b7
+      <button onclick="go('moves')" class="underline hover:text-ink">Moves</button> \u00b7
+      <button onclick="go('author')" class="underline hover:text-ink">Author</button> \u00b7
+      <button onclick="go('draft')" class="underline hover:text-ink">Draft</button> \u00b7
+      <button onclick="go('stress')" class="underline hover:text-ink">Stress test</button>
+    </div>
+  </aside>`;
+}
+
+/* ---------- Step 3: profile ---------- */
+function bandRow(key,band) {
+  const d = DIMS[key], b = BAND[band];
+  return `<div class="border-b border-line last:border-0 py-5">
+    <div class="flex items-baseline justify-between gap-4 flex-wrap mb-2">
+      <h4 class="font-serif text-lg">${d.name}</h4>
+      <span class="text-xs uppercase tracking-wide px-2.5 py-1 rounded-full bg-${b.cls}-soft text-${b.cls} border border-${b.cls}/30">${b.label}</span></div>
+    <div class="relative h-1.5 bg-line/60 rounded-full mb-3" role="img" aria-label="${d.name}: ${b.label}">
+      <div class="absolute -top-1 h-3.5 w-3.5 rounded-full bg-${b.cls} border-2 border-surface" style="left:${b.pos};transform:translateX(-50%)"></div></div>
+    <p class="text-sm leading-relaxed mb-2">${d.read[band]}</p>
+    <details class="text-sm"><summary class="text-muted hover:text-ink inline-flex items-center gap-1.5"><span class="chev text-xs">\u203a</span> Why this dimension matters</summary>
+      <p class="font-serif text-[15px] leading-relaxed mt-2 pl-4 border-l-2 border-${b.cls}/40 text-muted">${d.why}</p></details></div>`;
+}
+function vProfile() {
+  const b = score(), t1=['P1','P2','P3','P4','P5'], t2=['P6','P7','P8'];
+  const n = k => Object.keys(b).filter(x=>b[x]===k).length;
+  return `<div class="fade flex flex-col lg:flex-row gap-8 items-start">${leftCol(b)}
+    <div class="flex-1 min-w-0 space-y-6">
+      <div>${stepper(3)}
+        <h2 class="font-serif text-2xl leading-snug mb-4">${headline(b)}</h2>
+        <p class="text-sm text-muted leading-relaxed">${n('OPEN')} open, ${n('PART')} partial, ${n('WELL')} established. Open isn\u2019t a deduction \u2014 it\u2019s the dimension with the most room to move.</p></div>
+      <div class="bg-surface border border-line rounded-lg px-6 py-1"><p class="text-xs uppercase tracking-[0.15em] text-muted pt-5 pb-1">Primary dimensions</p>${t1.map(k=>bandRow(k,b[k])).join('')}</div>
+      <div class="bg-surface/60 border border-line rounded-lg px-6 py-1"><p class="text-xs uppercase tracking-[0.15em] text-muted pt-5 pb-1">Supporting dimensions</p>${t2.map(k=>bandRow(k,b[k])).join('')}</div>
+      <div class="bg-part-soft/70 border border-line rounded-lg p-5"><p class="text-xs uppercase tracking-[0.15em] text-muted mb-2">Against your own read</p>
+        <p class="font-serif text-[15px] leading-relaxed">${calibration(b)}</p></div>
+      <div class="flex flex-wrap items-center gap-3 pt-2">
+        <button onclick="go('moves')" class="bg-well text-white rounded-md px-5 py-2.5 text-sm hover:opacity-90">Choose redesign moves</button>
+        <button onclick="state.screen='diagnostic';state.group=GROUPS.length-1;render()" class="text-sm text-muted hover:text-ink">Change an answer</button>
+      </div>
+    </div></div>`;
+}
+
+/* ---------- Step 4: moves ---------- */
+function moveCard(m,b) {
+  const on = state.selected.includes(m.id);
+  const bandCls = BAND[b[m.p]].cls;
+  return `<div class="border rounded-lg p-5 transition-colors ${on?'border-well bg-well-soft/40':'border-line bg-surface'}">
+    <div class="flex items-start gap-4">
+      <div class="flex-1 min-w-0">
+        <div class="flex items-center gap-2 flex-wrap mb-1">
+          <h4 class="font-serif text-lg">${m.t}</h4>
+          <span class="text-[11px] uppercase tracking-wide px-2 py-0.5 rounded-full bg-${bandCls}-soft text-${bandCls} border border-${bandCls}/30">${DIMS[m.p].name}</span></div>
+        <p class="text-sm leading-relaxed mb-2">${m.s}</p>
+        <details class="text-sm"><summary class="text-muted hover:text-ink inline-flex items-center gap-1.5"><span class="chev text-xs">\u203a</span> Why this works</summary>
+          <p class="font-serif text-[15px] leading-relaxed mt-2 pl-4 border-l-2 border-line text-muted">${m.w}</p></details>
+      </div>
+      <button onclick="toggleMove('${m.id}')" aria-pressed="${on}" class="shrink-0 text-sm rounded-md px-3 py-2 border transition-colors ${on?'bg-well text-white border-well':'border-line hover:bg-part-soft'}">${on?'\u2713 Added':'Add'}</button>
+    </div></div>`;
+}
+function vMoves() {
+  const b = score();
+  const rank = m => { const band=b[m.p], tier=DIMS[m.p].tier;
+    if (tier===1 && band==='OPEN') return 0;
+    if (tier===2 && band==='OPEN') return 1;
+    if (band==='PART') return 2;
+    return 3; };
+  const buckets = [[],[],[],[]];
+  MOVES.forEach(m => buckets[rank(m)].push(m));
+  const primary = [...buckets[0]], secondary = [...buckets[1],...buckets[2]], strong = buckets[3];
+  const section = (title,note,arr) => arr.length ? `<div class="space-y-3">
+      <div class="pt-2"><h3 class="font-serif text-xl">${title}</h3><p class="text-sm text-muted">${note}</p></div>
+      ${arr.map(m=>moveCard(m,b)).join('')}</div>` : '';
+  return `<div class="fade flex flex-col lg:flex-row gap-8 items-start">${leftCol(b)}
+    <div class="flex-1 min-w-0 space-y-6">
+      <div>${stepper(4)}
+        <h2 class="font-serif text-2xl mb-3">Pick the moves that fit your course</h2>
+        <p class="text-sm text-muted leading-relaxed max-w-2xl">Ordered by where this assignment has the most room. Two or three well-chosen moves beat six \u2014 you have to write the specifics for each one, and a student has to do all of them. Nothing here requires a scheduled time, a live session, or a classmate.</p></div>
+      ${section('Start here','These serve the dimensions your assignment left most open.',primary)}
+      ${section('Also worth considering','Useful, but less leverage than the ones above.',secondary)}
+      ${strong.length?`<details class="bg-surface/60 border border-line rounded-lg p-5">
+        <summary class="text-sm text-muted hover:text-ink inline-flex items-center gap-1.5"><span class="chev text-xs">\u203a</span> Moves for dimensions you\u2019re already strong on (${strong.length})</summary>
+        <div class="space-y-3 mt-4">${strong.map(m=>moveCard(m,b)).join('')}</div></details>`:''}
+      <div class="flex flex-wrap items-center gap-3 pt-2 border-t border-line mt-6">
+        <button onclick="go('profile')" class="text-sm text-muted hover:text-ink py-3">Back to profile</button><div class="flex-1"></div>
+        <span id="mvErr" class="text-sm text-open"></span>
+        <button onclick="toAuthor()" class="bg-well text-white rounded-md px-5 py-2.5 text-sm hover:opacity-90">Write the specifics \u2014 ${state.selected.length} selected</button>
+      </div>
+    </div></div>`;
+}
+function toggleMove(id) {
+  state.selected = state.selected.includes(id) ? state.selected.filter(x=>x!==id) : [...state.selected,id];
+  state.touched = true; render(true);
+}
+function toAuthor() {
+  if (!state.selected.length) { document.getElementById('mvErr').textContent='Pick at least one move and we\u2019ll go write it.'; return; }
+  go('author');
+}
+
+/* ---------- Step 5: authoring ---------- */
+function vAuthor() {
+  const b = score();
+  const blocks = state.selected.map(id=>{ const m = MOVES.find(x=>x.id===id);
+    return `<div class="bg-surface border border-line rounded-lg p-6">
+      <div class="flex items-center gap-2 flex-wrap mb-1">
+        <h4 class="font-serif text-lg">${m.t}</h4>
+        <span class="text-[11px] uppercase tracking-wide px-2 py-0.5 rounded-full bg-part-soft text-part border border-part/30">${DIMS[m.p].name}</span></div>
+      <p class="text-sm text-muted mb-4 leading-relaxed">${m.s}</p>
+      <label class="block font-serif text-[15px] mb-2" for="sp_${id}">${m.q}</label>
+      <textarea id="sp_${id}" rows="5" oninput="setSpec('${id}',this.value)" placeholder="Write it as you\u2019d say it to a student."
+        class="w-full border border-line rounded-md px-3 py-2.5 bg-ground/40 leading-relaxed focus:bg-surface">${esc(state.specifics[id]||'')}</textarea>
+      <div class="flex items-center gap-3 mt-2">
+        <button onclick="copyMovePrompt('${id}')" class="text-xs border border-line rounded px-2.5 py-1 hover:bg-part-soft">Draft this for me \u2192 copy a prompt</button>
+        <button onclick="toggleMove('${id}')" class="text-xs text-muted hover:text-open ml-auto">Remove this move</button>
+      </div></div>`;}).join('');
+  return `<div class="fade flex flex-col lg:flex-row gap-8 items-start">${leftCol(b)}
+    <div class="flex-1 min-w-0 space-y-5">
+      <div>${stepper(5)}
+        <h2 class="font-serif text-2xl mb-3">Now write the parts only you can write</h2>
+        <p class="text-sm text-muted leading-relaxed max-w-2xl">I can name the move. I can\u2019t know what a good storm drain is in your unit, or what your students already tried in week three. Write these in student-facing language \u2014 they go straight into the draft.</p></div>
+      ${blocks}
+      <div class="flex flex-wrap items-center gap-3 pt-2 border-t border-line">
+        <button onclick="go('moves')" class="text-sm text-muted hover:text-ink py-3">Back to moves</button><div class="flex-1"></div>
+        <button onclick="go('draft')" class="bg-well text-white rounded-md px-5 py-2.5 text-sm hover:opacity-90">Assemble the draft</button>
+      </div>
+    </div></div>`;
+}
+function setSpec(id,v){ state.specifics[id]=v; state.touched=true; }
+
+/* ---------- Step 6: draft + completeness gate ---------- */
+function needsMedia(){ return state.selected.some(id=>MEDIA_MOVES.includes(id)) || (state.answers.q7||[]).some(x=>x==='video'||x==='audio'); }
+function needsSequence(){ return state.selected.some(id=>STAGED_MOVES.includes(id)); }
+function gateChecks() {
+  const d = state.draft, has = s => (s||'').trim().length > 0;
+  const c = [
+    {k:'task', ok:has(d.task), label:'A clear task statement', fix:'One or two sentences a student could read cold and know what they\u2019re making.'},
+    {k:'specifics', ok:state.selected.every(id=>has(state.specifics[id])), label:'Specifics written for every selected move', fix:'One of your moves still has an empty box on the previous step.'},
+    {k:'submission', ok:has(d.submission), label:'Explicit submission requirements for every component', fix:'What exactly is turned in, in what form, and where. Name each piece.'},
+    {k:'criteria', ok:has(d.criteria), label:'Stated success criteria', fix:'What separates strong work from adequate work here, in words a student can use.'},
+    {k:'ai', ok:has(d.ai), label:'Explicit AI-use expectations', fix:'Silence gets read as permission or prohibition, and both are guesses. Say it plainly.'}
+  ];
+  if (needsMedia()) c.splice(3,0,{k:'media', ok:has(d.media), label:'Technical specifications for the media', fix:'Length, file type, single-take or not, what must be visible or audible.'});
+  if (needsSequence()) c.push({k:'sequence', ok:has(d.sequence), label:'Deadlines or sequencing for each checkpoint', fix:'You staged this. Each stage needs its own due point and its own instructions.'});
+  return c;
+}
+function assemble() {
+  if (state.rawDraft !== null) return state.rawDraft;
+  const c = state.context, d = state.draft, L = [];
+  L.push(`# ${c.assignment||'Assignment'}`);
+  L.push(`${c.course||c.subject}${c.grade?` \u00b7 Grade ${c.grade}`:''}\n`);
+  if (d.task) { L.push('## What you\u2019re doing'); L.push(d.task+'\n'); }
+  const withText = state.selected.filter(id=>(state.specifics[id]||'').trim());
+  if (withText.length) {
+    L.push('## What this involves');
+    withText.forEach(id=>{ const m = MOVES.find(x=>x.id===id);
+      L.push(`### ${m.t}`); L.push(state.specifics[id].trim()+'\n'); });
+  }
+  if (d.sequence) { L.push('## Checkpoints and due dates'); L.push(d.sequence+'\n'); }
+  if (d.submission) { L.push('## What to submit'); L.push(d.submission+'\n'); }
+  if (d.media) { L.push('## Technical requirements for recordings'); L.push(d.media+'\n'); }
+  if (d.criteria) { L.push('## What strong work looks like'); L.push(d.criteria+'\n'); }
+  if (d.ai) { L.push('## Using AI on this assignment'); L.push(d.ai+'\n'); }
+  return L.join('\n');
+}
+function draftField(k,label,hint,rows) {
+  return `<div><label class="block text-sm font-medium mb-1" for="df_${k}">${label}</label>
+    <p class="text-xs text-muted mb-2">${hint}</p>
+    <textarea id="df_${k}" rows="${rows||3}" oninput="setDraft('${k}',this.value)" class="w-full border border-line rounded-md px-3 py-2.5 bg-ground/40 leading-relaxed focus:bg-surface">${esc(state.draft[k])}</textarea></div>`;
+}
+function vDraft() {
+  const b = score(), checks = gateChecks(), ready = checks.every(c=>c.ok);
+  const gate = `<div class="border rounded-lg p-5 ${ready?'border-well bg-well-soft/50':'border-open bg-open-soft/50'}">
+    <p class="text-xs uppercase tracking-[0.15em] text-muted mb-1">Completeness check</p>
+    <p class="font-serif text-[15px] leading-relaxed mb-4">${ready
+      ? 'This draft is self-sufficient. A student could work from it without asking anyone a question \u2014 which is the standard here, since no one downstream can patch it.'
+      : 'No teacher downstream can clarify this in the moment, so it has to stand on its own. A few things are still open.'}</p>
+    <ul class="space-y-2">${checks.map(c=>`<li class="flex gap-2.5 text-sm">
+      <span class="${c.ok?'text-well':'text-open'} shrink-0" aria-hidden="true">${c.ok?'\u2713':'\u25cb'}</span>
+      <span><span class="${c.ok?'text-muted line-through decoration-line':''}">${c.label}</span>${c.ok?'':`<span class="block text-xs text-muted mt-0.5">${c.fix}</span>`}</span></li>`).join('')}</ul></div>`;
+
+  const editing = state.rawDraft !== null;
+  const preview = editing
+    ? `<textarea rows="24" oninput="state.rawDraft=this.value;state.touched=true" class="w-full border border-line rounded-md px-4 py-3 bg-ground/40 font-mono text-[13px] leading-relaxed">${esc(state.rawDraft)}</textarea>`
+    : `<pre class="whitespace-pre-wrap font-serif text-[15px] leading-relaxed text-ink/90">${esc(assemble())}</pre>`;
+
+  return `<div class="fade flex flex-col lg:flex-row gap-8 items-start">${leftCol(b)}
+    <div class="flex-1 min-w-0 space-y-6">
+      <div>${stepper(6)}
+        <h2 class="font-serif text-2xl mb-3">The student-facing draft</h2>
+        <p class="text-sm text-muted leading-relaxed max-w-2xl">Your authored specifics are already in. These remaining fields are the ones that make a prompt usable without a teacher standing next to it.</p></div>
+      ${gate}
+      <div class="bg-surface border border-line rounded-lg p-6 space-y-5">
+        ${draftField('task','Task statement','What the student is making, in one or two sentences.',3)}
+        ${needsSequence()?draftField('sequence','Checkpoints and sequencing','Each stage, what\u2019s due at it, and when.',4):''}
+        ${draftField('submission','Submission requirements','Every component, its format, and where it goes.',4)}
+        ${needsMedia()?draftField('media','Technical specifications for media','Length, file type, single-take or not, what must be visible or audible.',3):''}
+        ${draftField('criteria','Success criteria','What distinguishes strong work here.',4)}
+        ${draftField('ai','AI-use expectations','What\u2019s expected, what must be disclosed, and how it will be assessed.',3)}
+      </div>
+      <div class="bg-surface border border-line rounded-lg p-6">
+        <div class="flex items-center justify-between gap-4 mb-4 flex-wrap">
+          <p class="text-xs uppercase tracking-[0.15em] text-muted">Assembled draft</p>
+          <button onclick="toggleEdit()" class="text-xs border border-line rounded px-2.5 py-1 hover:bg-part-soft">${editing?'Rebuild from the fields above':'Edit this text directly'}</button></div>
+        ${preview}
+      </div>
+      <div class="bg-surface border border-line rounded-lg p-6">
+        <label class="block text-sm font-medium mb-1" for="notes">Notes for whoever picks this up later</label>
+        <p class="text-xs text-muted mb-2">Open questions, things you weren\u2019t sure about, what you\u2019d try next. Goes into Part 1 of the export.</p>
+        <textarea id="notes" rows="3" oninput="state.notes=this.value;state.touched=true" class="w-full border border-line rounded-md px-3 py-2.5 bg-ground/40 leading-relaxed">${esc(state.notes)}</textarea></div>
+      <div class="flex flex-wrap items-center gap-3 pt-2 border-t border-line">
+        <button onclick="go('author')" class="text-sm text-muted hover:text-ink py-3">Back to authoring</button><div class="flex-1"></div>
+        <span id="dfErr" class="text-sm text-open"></span>
+        <button onclick="toStress()" class="${ready?'bg-well text-white':'bg-line text-muted'} rounded-md px-5 py-2.5 text-sm ${ready?'hover:opacity-90':''}">Stress-test this draft</button>
+        <button onclick="tryExport()" class="border border-line rounded-md px-4 py-2.5 text-sm hover:bg-surface">Export without testing</button>
+      </div>
+      <p class="text-xs text-muted">The stress test is the step that tells you which of your moves are load-bearing and which are decorative. It takes about three minutes.</p>
+      <div class="bg-surface border border-line rounded-lg p-6">
+        <p class="text-xs uppercase tracking-[0.15em] text-muted mb-2">Two places this could go next</p>
+        <p class="text-sm text-muted leading-relaxed mb-4">Both carry this session forward. What comes before this assignment, and what comes after it?</p>
+        <div class="flex flex-wrap gap-3">
+          <button onclick="startMode('rubric')" class="text-sm border border-line rounded-md px-4 py-2.5 hover:bg-part-soft">Build a rubric for this</button>
+          <button onclick="seedUnit();go('unit')" class="text-sm border border-line rounded-md px-4 py-2.5 hover:bg-part-soft">See how this fits in a unit</button>
+        </div>
+      </div>
+    </div></div>`;
+}
+function setDraft(k,v){ state.draft[k]=v; state.touched=true; if(['task','submission','criteria','ai','media','sequence'].includes(k)) debounceRender(); }
+let rt; function debounceRender(){ clearTimeout(rt); rt = setTimeout(()=>{ const a=document.activeElement; const id=a&&a.id; render(true);
+  if(id){ const e=document.getElementById(id); if(e){ e.focus(); e.setSelectionRange(e.value.length,e.value.length);} } }, 700); }
+function toggleEdit(){ state.rawDraft = state.rawDraft===null ? assemble() : null; render(true); }
+function tryExport() {
+  if (!gateChecks().every(c=>c.ok)) { document.getElementById('dfErr').textContent='A few pieces are still open \u2014 they\u2019re listed above.'; return; }
+  exportDoc(false);
+}
+
+/* =====================================================================
+   MODE B — RUBRIC BUILDER
+   ===================================================================== */
+const LEVELS = ['Emerging','Developing','Proficient','Distinguished'];
+const CATS = {
+  reasoning:{label:'Reasoning',surface:false,name:'Quality and specificity of reasoning',
+    lv:['Claims are stated but not supported, or support doesn\u2019t connect to the claim.',
+        'Reasoning is present but general \u2014 it would fit many situations equally well.',
+        'Reasoning is specific to this case and the connection between evidence and claim is explicit.',
+        'Reasoning is specific, and the student anticipates and addresses the strongest objection to it.']},
+  evidence:{label:'Firsthand evidence',surface:false,name:'Specificity of local or firsthand evidence',
+    lv:['Evidence is generic or unsourced \u2014 it could have come from anywhere.',
+        'Some firsthand material appears, but it sits alongside the analysis rather than driving it.',
+        'Firsthand evidence is specific, documented, and does real work in the argument.',
+        'Firsthand evidence is specific enough that the analysis could not have been written without it.']},
+  reflection:{label:'Reflection',surface:false,name:'Depth and honesty of reflection',
+    lv:['Reflection restates what was done rather than examining how the thinking went.',
+        'Reflection names a difficulty but stays general about it.',
+        'Reflection identifies a specific moment of difficulty or change and what caused it.',
+        'Reflection is specific and candid, including about what still isn\u2019t understood.']},
+  coherence:{label:'Coherence across stages',surface:false,name:'Coherence between staged work and the final product',
+    lv:['The final product shows no relationship to the earlier stages submitted.',
+        'The final product is loosely consistent with earlier stages.',
+        'The final product clearly develops from the earlier stages, including where it departs from them.',
+        'The development is traceable stage by stage, and departures are explained.']},
+  presence:{label:'Recorded explanation',surface:false,name:'Quality of the recorded explanation',
+    lv:['The recording reads from a script or restates the artifact without explaining it.',
+        'The explanation covers the work but doesn\u2019t account for the choices behind it.',
+        'The student explains their own choices unprompted and in their own words.',
+        'The student explains their choices and can articulate what they\u2019d do differently and why.']},
+  ai:{label:'Critique of AI output',surface:false,name:'Quality of the critique of AI output',
+    lv:['AI use is reported without evaluation, or not reported.',
+        'The critique is general \u2014 it says the output was unhelpful without saying where.',
+        'The critique identifies specific errors, gaps, or generic passages and explains what was wrong with them.',
+        'The critique identifies specific problems and shows what the student substituted and why it\u2019s better.']},
+  concepts:{label:'Course concepts',surface:false,name:'Accurate use of course concepts',
+    lv:['Concepts are named but misapplied or misunderstood.',
+        'Concepts are used correctly in familiar contexts only.',
+        'Concepts are applied accurately to this specific case.',
+        'Concepts are applied accurately, including where they don\u2019t quite fit and why.']},
+  surface:{label:'Mechanics and presentation',surface:true,name:'Mechanics and presentation',
+    lv:['Errors interfere with understanding.','Errors are noticeable but don\u2019t obscure meaning.',
+        'Clear and readable throughout.','Clear, readable, and well organized for its audience.']}
+};
+const P2CAT = { P1:'reasoning', P2:'coherence', P3:'presence', P4:'reflection', P5:'coherence', P6:'evidence', P7:'ai', P8:'evidence' };
+
+function seedRubric() {
+  if (state.rubric) return;
+  let cats = [];
+  if (state.selected.length) {
+    state.selected.forEach(id=>{ const c = P2CAT[MOVES.find(m=>m.id===id).p]; if(!cats.includes(c)) cats.push(c); });
+    if (!cats.includes('reasoning')) cats.unshift('reasoning');
+  } else { cats = ['reasoning','evidence','reflection','presence']; }
+  cats.push('concepts','surface');
+  const surfaceW = 5, rest = Math.floor((100-surfaceW)/(cats.length-1));
+  const crits = cats.map((c,i)=>({ id:'c'+i+Date.now().toString(36).slice(-3), cat:c, name:CATS[c].name,
+    weight: c==='surface' ? surfaceW : rest, lv:[...CATS[c].lv] }));
+  const drift = 100 - crits.reduce((s,c)=>s+c.weight,0);
+  crits[0].weight += drift;
+  state.rubric = { criteria: crits };
+  state.touched = true;
+}
+const surfaceTotal = () => state.rubric.criteria.filter(c=>CATS[c.cat].surface).reduce((s,c)=>s+Number(c.weight||0),0);
+const weightTotal  = () => state.rubric.criteria.reduce((s,c)=>s+Number(c.weight||0),0);
+
+function vRubric() {
+  if (!state.rubric) seedRubric();
+  const R = state.rubric, total = weightTotal(), surf = surfaceTotal();
+  const drift = surf > 15;
+  const rows = R.criteria.map((c,i)=>`
+    <div class="border border-line rounded-lg bg-surface p-5">
+      <div class="flex gap-3 items-start flex-wrap">
+        <div class="flex-1 min-w-[220px]">
+          <label class="sr-only" for="cn_${c.id}">Criterion name</label>
+          <input id="cn_${c.id}" value="${esc(c.name)}" oninput="setCrit('${c.id}','name',this.value)" class="w-full font-serif text-lg bg-transparent border-b border-line focus:border-well pb-1">
+          <span class="text-[11px] uppercase tracking-wide mt-2 inline-block px-2 py-0.5 rounded-full ${CATS[c.cat].surface?'bg-open-soft text-open border border-open/30':'bg-well-soft text-well border border-well/30'}">${CATS[c.cat].label}</span>
+        </div>
+        <div class="w-24">
+          <label class="block text-xs text-muted mb-1" for="cw_${c.id}">Weight %</label>
+          <input id="cw_${c.id}" type="number" min="0" max="100" value="${c.weight}" oninput="setCrit('${c.id}','weight',this.value);updateTotals()" class="w-full border border-line rounded-md px-2 py-1.5 bg-ground/40 text-sm">
+        </div>
+        <button onclick="dropCrit('${c.id}')" class="text-xs text-muted hover:text-open mt-6">Remove</button>
+      </div>
+      <details class="mt-4"><summary class="text-sm text-muted hover:text-ink inline-flex items-center gap-1.5"><span class="chev text-xs">\u203a</span> Performance levels</summary>
+        <div class="mt-3 space-y-3">${c.lv.map((t,j)=>`
+          <div><label class="block text-xs uppercase tracking-wide text-muted mb-1" for="cl_${c.id}_${j}">${LEVELS[j]}</label>
+          <textarea id="cl_${c.id}_${j}" rows="2" oninput="setLevel('${c.id}',${j},this.value)" class="w-full border border-line rounded-md px-3 py-2 bg-ground/40 text-sm leading-relaxed">${esc(t)}</textarea></div>`).join('')}</div>
+      </details>
+    </div>`).join('');
+
+  const addOpts = Object.keys(CATS).map(k=>`<option value="${k}">${CATS[k].label}</option>`).join('');
+  const back = state.selected.length ? `<button onclick="go('draft')" class="text-sm text-muted hover:text-ink py-3">Back to the draft</button>` : `<button onclick="goHome()" class="text-sm text-muted hover:text-ink py-3">Back to start</button>`;
+
+  return `<div class="fade max-w-3xl mx-auto space-y-6">
+    <div>
+      <p class="text-xs uppercase tracking-[0.15em] text-muted mb-2">Mode B \u00b7 Rubric</p>
+      <h2 class="font-serif text-2xl mb-3">Criteria for ${esc(state.context.assignment||state.context.course||state.context.subject)}</h2>
+      <p class="text-sm text-muted leading-relaxed">A rubric that heavily rewards polished prose, clean mechanics, and tidy organization is a rubric that rewards AI. Those are the things a model supplies for free. Weight toward reasoning, firsthand evidence, honest reflection, and the recorded explanation \u2014 the parts a student has to supply themselves.</p>
+      ${state.selected.length?`<p class="text-sm text-muted leading-relaxed mt-2">These criteria are seeded from the ${state.selected.length} move${state.selected.length>1?'s':''} you selected, so they assess the new thinking rather than the old assignment.</p>`:''}
+    </div>
+    <div id="totals" class="border rounded-lg p-4 ${drift||total!==100?'border-open bg-open-soft/50':'border-well bg-well-soft/50'}">${totalsHtml()}</div>
+    ${rows}
+    <div class="flex items-center gap-2 flex-wrap">
+      <label class="text-sm text-muted" for="newcat">Add a criterion:</label>
+      <select id="newcat" class="border border-line rounded-md px-2 py-1.5 bg-surface text-sm">${addOpts}</select>
+      <button onclick="addCrit()" class="text-sm border border-line rounded-md px-3 py-1.5 hover:bg-part-soft">Add</button>
+    </div>
+    <div class="bg-surface border border-line rounded-lg p-6 space-y-4">
+      <p class="text-xs uppercase tracking-[0.15em] text-muted">Guidance that travels with this rubric</p>
+      ${[['Scoring recorded components','Score what the student says, not how smoothly they say it. Hesitation, self-correction, and rephrasing are signs of live thinking, not weak preparation. What you\u2019re looking for is whether they can account for choices you didn\u2019t ask about directly.'],
+         ['Telling genuine reflection from performed reflection','Performed reflection is fluent, general, and flattering \u2014 it names growth without naming a cause. Genuine reflection is specific, occasionally unflattering, and usually mentions something that didn\u2019t work. Ask for a moment, not a summary.'],
+         ['Using earlier stages as evidence','When a final product seems disconnected from the checkpoints that preceded it, the checkpoints are the evidence. A strong finish with no visible development is a question worth asking, not an accusation \u2014 and the staged artifacts are how you ask it.']]
+        .map(([t,b])=>`<details><summary class="text-sm hover:text-ink inline-flex items-center gap-1.5"><span class="chev text-xs">\u203a</span> ${t}</summary><p class="font-serif text-[15px] leading-relaxed mt-2 pl-4 border-l-2 border-line text-muted">${b}</p></details>`).join('')}
+    </div>
+    <div class="flex flex-wrap items-center gap-3 pt-2 border-t border-line">
+      ${back}<div class="flex-1"></div>
+      <button onclick="exportDoc(false)" class="bg-well text-white rounded-md px-5 py-2.5 text-sm hover:opacity-90">Export with the rubric</button>
+    </div>
+  </div>`;
+}
+function totalsHtml() {
+  const total = weightTotal(), surf = surfaceTotal();
+  const msg = surf > 15
+    ? `Surface features are carrying ${surf}% of the grade. That\u2019s the portion a model can earn without the student thinking \u2014 worth pulling down toward 10% or less.`
+    : total !== 100
+      ? `Weights total ${total}%. Not a problem while you\u2019re still moving things around.`
+      : `Weights total 100%, with ${surf}% on surface features. That\u2019s a rubric that pays for thinking.`;
+  return `<p class="text-sm leading-relaxed"><span class="font-medium">${total}% allocated \u00b7 ${surf}% on surface features.</span> ${msg}</p>`;
+}
+function updateTotals(){ const el=document.getElementById('totals'); if(!el) return;
+  el.innerHTML = totalsHtml();
+  const bad = surfaceTotal()>15 || weightTotal()!==100;
+  el.className = `border rounded-lg p-4 ${bad?'border-open bg-open-soft/50':'border-well bg-well-soft/50'}`; }
+function setCrit(id,k,v){ const c=state.rubric.criteria.find(x=>x.id===id); c[k] = k==='weight' ? (parseInt(v)||0) : v; state.touched=true; }
+function setLevel(id,j,v){ state.rubric.criteria.find(x=>x.id===id).lv[j]=v; state.touched=true; }
+function dropCrit(id){ state.rubric.criteria = state.rubric.criteria.filter(x=>x.id!==id); state.touched=true; render(true); }
+function addCrit(){ const k=document.getElementById('newcat').value;
+  state.rubric.criteria.push({id:'c'+Date.now().toString(36), cat:k, name:CATS[k].name, weight:0, lv:[...CATS[k].lv]});
+  state.touched=true; render(true); }
+
+/* =====================================================================
+   MODE C — UNIT DESIGNER
+   ===================================================================== */
+const MODALITIES = ['Typed document','Slides','Video','Audio','Image or artwork','Code','Dataset','Physical artifact','Mixed'];
+function analyzeUnit() {
+  const items = state.unit.items;
+  const consumedBy = {};
+  items.forEach(it=>{ if(it.consumes) (consumedBy[it.consumes]=consumedBy[it.consumes]||[]).push(it.id); });
+  const rows = items.map(it=>({ ...it, feeds: consumedBy[it.id]||[], alone: !it.consumes && !(consumedBy[it.id]||[]).length }));
+  const counts = {}; items.forEach(it=>{ if(it.modality) counts[it.modality]=(counts[it.modality]||0)+1; });
+  let dominant=null, dn=0; Object.entries(counts).forEach(([k,v])=>{ if(v>dn){dn=v;dominant=k;} });
+  const concentrated = items.length>=3 && dn/items.length >= 0.6;
+  let pick=null, best=-1;
+  rows.forEach((r,i)=>{ const s = (r.alone?2:0) + (['Typed document','Slides'].includes(r.modality)?1:0);
+    if (s>best) { best=s; pick=r; } });
+  return { rows, dominant, dn, concentrated, pick, best };
+}
+function chainSvg(rows) {
+  const n = rows.length, W = Math.max(n*120, 240), idx = {};
+  rows.forEach((r,i)=>idx[r.id]=i);
+  const x = i => 60 + i*120;
+  const arcs = rows.filter(r=>r.consumes && idx[r.consumes]!==undefined).map(r=>{
+    const a = x(idx[r.consumes]), b = x(idx[r.id]), mid=(a+b)/2, lift = 34 + Math.min(Math.abs(idx[r.id]-idx[r.consumes])*8,20);
+    return `<path d="M ${a} 62 Q ${mid} ${62-lift} ${b} 62" fill="none" stroke="#37736C" stroke-width="1.5" marker-end="url(#ar)"/>`;
+  }).join('');
+  const nodes = rows.map((r,i)=>`
+    <g><circle cx="${x(i)}" cy="62" r="14" fill="${r.alone?'#F5E7D2':'#E0EDEA'}" stroke="${r.alone?'#A46C24':'#37736C'}" stroke-width="2" ${r.alone?'stroke-dasharray="3 2"':''}/>
+    <text x="${x(i)}" y="67" text-anchor="middle" font-size="12" fill="${r.alone?'#A46C24':'#37736C'}">${i+1}</text>
+    <text x="${x(i)}" y="96" text-anchor="middle" font-size="10" fill="#6C6257">${esc((r.name||'Untitled').slice(0,16))}</text></g>`).join('');
+  return `<div class="overflow-x-auto"><svg viewBox="0 0 ${W} 108" width="${W}" height="108" role="img" aria-label="Evidence chain across ${n} assessments">
+    <defs><marker id="ar" markerWidth="7" markerHeight="7" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 z" fill="#37736C"/></marker></defs>
+    ${arcs}${nodes}</svg></div>`;
+}
+function vUnit() {
+  const u = state.unit, A = analyzeUnit();
+  const item = (it,i)=>{ const r = A.rows[i];
+    return `<div class="border rounded-lg p-5 ${r.alone?'border-open bg-open-soft/30 border-dashed':'border-line bg-surface'}">
+      <div class="flex gap-3 items-start flex-wrap mb-3">
+        <span class="font-serif text-lg text-muted w-6 shrink-0">${i+1}</span>
+        <input value="${esc(it.name)}" oninput="setItem('${it.id}','name',this.value)" onchange="render(true)" placeholder="Assessment name" class="flex-1 min-w-[180px] font-serif text-lg bg-transparent border-b border-line focus:border-well pb-1">
+        ${r.alone?'<span class="text-[11px] uppercase tracking-wide px-2 py-0.5 rounded-full bg-open-soft text-open border border-open/30">Stands alone</span>':''}
+        <button onclick="dropItem('${it.id}')" class="text-xs text-muted hover:text-open">Remove</button>
+      </div>
+      <div class="grid sm:grid-cols-2 gap-4">
+        <div><label class="block text-xs text-muted mb-1">What the student submits</label>
+          <select onchange="setItem('${it.id}','modality',this.value);render(true)" class="w-full border border-line rounded-md px-2 py-1.5 bg-ground/40 text-sm">
+            <option value="">Choose\u2026</option>${MODALITIES.map(m=>`<option ${it.modality===m?'selected':''}>${m}</option>`).join('')}</select></div>
+        <div><label class="block text-xs text-muted mb-1">Takes input from</label>
+          <select onchange="setItem('${it.id}','consumes',this.value);render(true)" class="w-full border border-line rounded-md px-2 py-1.5 bg-ground/40 text-sm">
+            <option value="">Nothing earlier</option>${u.items.slice(0,i).map(o=>`<option value="${o.id}" ${it.consumes===o.id?'selected':''}>${esc(o.name||'Untitled')}</option>`).join('')}</select></div>
+      </div>
+      <div class="mt-3"><label class="block text-xs text-muted mb-1">How it operates, in a sentence</label>
+        <input value="${esc(it.desc)}" oninput="setItem('${it.id}','desc',this.value)" placeholder="Descriptive, not evaluative \u2014 what happens, not whether it\u2019s good" class="w-full border border-line rounded-md px-3 py-1.5 bg-ground/40 text-sm"></div>
+      ${r.feeds.length?`<p class="text-xs text-muted mt-3">Feeds: ${r.feeds.map(f=>esc((u.items.find(o=>o.id===f)||{}).name||'Untitled')).join(', ')}</p>`:''}
+    </div>`;
+  };
+  const findings = [];
+  const alone = A.rows.filter(r=>r.alone);
+  if (u.items.length >= 2) {
+    findings.push(alone.length
+      ? `${alone.length} of ${u.items.length} assessments neither take input from earlier work nor feed anything later: ${alone.map(r=>esc(r.name||'Untitled')).join(', ')}. Each one has to defend itself entirely on its own, which is the hardest position for an assessment to be in.`
+      : 'Every assessment here is linked to something before or after it. That chain is doing more for validity than any individual prompt could.');
+    if (A.concentrated) findings.push(`${A.dn} of ${u.items.length} assessments arrive as ${A.dominant.toLowerCase()}. Each may be sound on its own, and the unit still only ever sees the student in one medium \u2014 the one a model is most fluent in.`);
+    if (A.pick) findings.push(`If you only redesign one, make it <strong>${esc(A.pick.name||'Untitled')}</strong>. ${A.pick.alone?'It stands alone':'It\u2019s already linked'}${['Typed document','Slides'].includes(A.pick.modality)?' and arrives as text':''} \u2014 which means changes there have the most room to travel.`);
+  }
+  return `<div class="fade max-w-3xl mx-auto space-y-6">
+    <div>
+      <p class="text-xs uppercase tracking-[0.15em] text-muted mb-2">Mode C \u00b7 Unit</p>
+      <h2 class="font-serif text-2xl mb-3">The chain across the unit</h2>
+      <p class="text-sm text-muted leading-relaxed">Individual assignments can\u2019t be made AI-resistant one at a time \u2014 validity comes from evidence that accumulates. List the assessments in order and say what each one takes from the one before it.</p>
+    </div>
+    <div class="bg-surface border border-line rounded-lg p-6 grid sm:grid-cols-2 gap-4">
+      <div><label class="block text-sm font-medium mb-1" for="usub">Subject</label>
+        <input id="usub" value="${esc(u.subject||state.context.subject)}" oninput="setUnit('subject',this.value)" class="w-full border border-line rounded-md px-3 py-2 bg-ground/40"></div>
+      <div><label class="block text-sm font-medium mb-1" for="udur">Unit length</label>
+        <input id="udur" value="${esc(u.duration)}" oninput="setUnit('duration',this.value)" placeholder="e.g. six weeks" class="w-full border border-line rounded-md px-3 py-2 bg-ground/40"></div>
+      <div class="sm:col-span-2"><label class="block text-sm font-medium mb-1" for="ugoal">What the unit is for</label>
+        <textarea id="ugoal" rows="2" oninput="setUnit('goals',this.value)" class="w-full border border-line rounded-md px-3 py-2 bg-ground/40 leading-relaxed">${esc(u.goals)}</textarea></div>
+    </div>
+    ${u.items.length?`<div class="bg-surface border border-line rounded-lg p-5">
+      <p class="text-xs uppercase tracking-[0.15em] text-muted mb-3">Evidence chain</p>
+      ${chainSvg(A.rows)}
+      <p class="text-xs text-muted mt-2">Solid nodes are linked. Dashed amber nodes stand alone. Arrows run from the work that produces evidence to the work that consumes it.</p></div>`:''}
+    <div class="space-y-4">${u.items.map(item).join('')}</div>
+    <button onclick="addItem()" class="text-sm border border-line rounded-md px-4 py-2 hover:bg-part-soft">Add an assessment</button>
+    ${findings.length?`<div class="bg-part-soft/60 border border-line rounded-lg p-6 space-y-3">
+      <p class="text-xs uppercase tracking-[0.15em] text-muted">What the chain shows</p>
+      ${findings.map(f=>`<p class="font-serif text-[15px] leading-relaxed">${f}</p>`).join('')}</div>`:''}
+    <div class="flex flex-wrap items-center gap-3 pt-2 border-t border-line">
+      <button onclick="goHome()" class="text-sm text-muted hover:text-ink py-3">Back to start</button><div class="flex-1"></div>
+      ${A.pick&&u.items.length>=2?`<button onclick="startMode('diagnostic')" class="text-sm border border-line rounded-md px-4 py-2.5 hover:bg-part-soft">Redesign one of these now</button>`:''}
+      <button onclick="exportDoc(false)" class="bg-well text-white rounded-md px-5 py-2.5 text-sm hover:opacity-90">Export the unit brief</button>
+    </div>
+  </div>`;
+}
+function seedUnit(){
+  if (state.unit.items.length) return;
+  const c = state.context;
+  state.unit.subject = state.unit.subject || c.subject;
+  const sub = state.answers.q7||[];
+  const mod = sub.includes('video')?'Video':sub.includes('audio')?'Audio':sub.includes('slides')?'Slides':'Typed document';
+  state.unit.items.push({id:'u'+Date.now().toString(36), name:c.assignment||'This assignment', modality:mod, consumes:'',
+    desc:(c.goal||'').slice(0,140)});
+  state.touched = true;
+}
+function setUnit(k,v){ state.unit[k]=v; state.touched=true; }
+function setItem(id,k,v){ const it=state.unit.items.find(x=>x.id===id); it[k]=v; state.touched=true; }
+function addItem(){ state.unit.items.push({id:'u'+Date.now().toString(36),name:'',modality:'',consumes:'',desc:''}); state.touched=true; render(true); }
+function dropItem(id){ state.unit.items = state.unit.items.filter(x=>x.id!==id)
+  .map(x=> x.consumes===id ? {...x,consumes:''} : x); state.touched=true; render(true); }
+
+/* =====================================================================
+   COPY-PASTE BRIDGE — the tool builds the prompt, you run it wherever
+   you already have a model. Nothing leaves this page on its own.
+   ===================================================================== */
+const CONSTRAINTS = `Standing constraints for this school. Never suggest, under any framing:
+- synchronous sessions, live oral defenses, real-time Q&A, or anything requiring students to be present at a set time
+- proctored or timed examinations
+- required student-to-student collaboration, group projects, or peer review requiring pairing or scheduling
+- in-person attendance or physical gathering
+Treat as first-class instead: asynchronous recorded video and audio; interaction with people in the student's own life (family, neighbors, working professionals); and the geographically scattered student body as an asset for local grounding.`;
+
+function contextBlock() {
+  const c = state.context, L = [];
+  L.push(`Subject: ${c.subject}`);
+  L.push(`Grade: ${c.grade}`);
+  if (c.course) L.push(`Course: ${c.course}`);
+  if (c.position) L.push(`Position in course: ${c.position}`);
+  if (c.time) L.push(`Student time investment: ${c.time}`);
+  if (c.goal) L.push(`What students should be able to do: ${c.goal}`);
+  if (Object.keys(state.answers).length >= 16) {
+    const b = score();
+    L.push(`Structural read of the current version: ${Object.keys(DIMS).map(k=>`${DIMS[k].name} ${BAND[b[k]].label.toLowerCase()}`).join('; ')}.`);
+  }
+  return L.join('\n');
+}
+function movePrompt(id) {
+  const m = MOVES.find(x=>x.id===id), c = state.context, started = (state.specifics[id]||'').trim();
+  const others = state.selected.filter(x=>x!==id).map(x=>MOVES.find(y=>y.id===x).t);
+  const L = [];
+  L.push(`I'm redesigning an assessment for a fully asynchronous virtual high school where every student works from home with unrestricted AI access. Help me draft one specific piece of it.`);
+  L.push('');
+  L.push(CONSTRAINTS);
+  L.push('');
+  L.push('CONTEXT');
+  L.push(contextBlock());
+  if (others.length) L.push(`Other moves already in this redesign (don't duplicate them): ${others.join('; ')}.`);
+  L.push('');
+  L.push('THE MOVE I NEED DRAFTED');
+  L.push(`${m.t} \u2014 ${m.s}`);
+  L.push(`What it's for: ${m.w}`);
+  L.push('');
+  L.push('WHAT TO WRITE');
+  L.push(`Answer this, in student-facing language: ${m.q}`);
+  if (started) { L.push(''); L.push('Here\u2019s my start \u2014 build on it rather than replacing it:'); L.push(started); }
+  L.push('');
+  L.push(`Write this one component only, not the whole assignment. 150\u2013250 words. Be specific to ${c.subject} at grade ${c.grade} \u2014 generic advice is useless to me. Give me the words a student would read, not a description of what the words should do.`);
+  return L.join('\n');
+}
+function stressPrompt() {
+  const L = [];
+  L.push(`Attempt the assignment below exactly as an unmotivated student would: you have no course materials, no class notes, no data you collected yourself, and no access to anything local or personal. You have only this prompt and what you already know. Don't ask me clarifying questions \u2014 just produce what you would actually turn in.`);
+  L.push('');
+  L.push(`Then, after your attempt, add a section headed WHAT I COULD NOT DO. In it, list every component of the assignment you were unable to genuinely complete, and say plainly why \u2014 whether it needed firsthand data, a recording of a real person, evidence from earlier work, or something else you don't have.`);
+  L.push('');
+  L.push('Be honest rather than helpful. If you could produce something passable, say so.');
+  L.push('');
+  L.push('--- ASSIGNMENT BEGINS ---');
+  L.push(assemble().trim());
+  L.push('--- ASSIGNMENT ENDS ---');
+  return L.join('\n');
+}
+function briefingPrompt() {
+  const L = [];
+  L.push(`I'm redesigning an assessment for a fully asynchronous virtual high school where every student works from home with unrestricted AI access. Here's where I am. I want to talk it through \u2014 push back on me where you disagree.`);
+  L.push('');
+  L.push(CONSTRAINTS);
+  L.push('');
+  L.push('CONTEXT');
+  L.push(contextBlock());
+  L.push('');
+  if (state.selected.length) {
+    L.push('MOVES I\u2019VE CHOSEN');
+    state.selected.forEach(id=>{ const m = MOVES.find(x=>x.id===id);
+      L.push(`- ${m.t}: ${m.s}`);
+      if ((state.specifics[id]||'').trim()) L.push(`  My version: ${state.specifics[id].trim()}`);
+    });
+    L.push('');
+  }
+  L.push('Suggestions have to be specific to the discipline and grade above. Generic advice doesn\u2019t help me.');
+  return L.join('\n');
+}
+
+function showPrompt(title, note, text) {
+  const m = document.getElementById('modal');
+  m.innerHTML = `<div class="fixed inset-0 z-40 bg-ink/40 flex items-start justify-center p-4 overflow-y-auto" onclick="if(event.target===this)closePrompt()">
+    <div class="bg-surface border border-line rounded-lg max-w-2xl w-full my-8 p-6 shadow-lg" role="dialog" aria-modal="true">
+      <h3 class="font-serif text-xl mb-1">${title}</h3>
+      <p class="text-sm text-muted mb-4 leading-relaxed">${note}</p>
+      <textarea id="promptBox" readonly rows="14" class="w-full border border-line rounded-md px-3 py-2.5 bg-ground/40 font-mono text-[12px] leading-relaxed"></textarea>
+      <div class="flex items-center gap-3 mt-4 flex-wrap">
+        <button onclick="copyPrompt()" data-autofocus class="bg-well text-white rounded-md px-4 py-2 text-sm hover:opacity-90">Copy to clipboard</button>
+        <span id="copyMsg" class="text-sm text-well" role="status"></span>
+        <button onclick="closePrompt()" class="ml-auto text-sm text-muted hover:text-ink">Close</button>
+      </div>
+    </div></div>`;
+  m.classList.remove('hidden');
+  const box = document.getElementById('promptBox');
+  box.value = text; box.select();
+}
+function closePrompt(){ const m=document.getElementById('modal'); m.classList.add('hidden'); m.innerHTML=''; }
+function copyPrompt() {
+  const box = document.getElementById('promptBox'), msg = document.getElementById('copyMsg');
+  const done = () => { msg.textContent = 'Copied \u2014 paste it into your model.'; setTimeout(()=>{ if(msg) msg.textContent=''; }, 4000); };
+  box.select();
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(box.value).then(done).catch(()=>{ try{document.execCommand('copy'); done();}catch(e){ msg.textContent='Select the text above and copy it manually.'; } });
+  } else { try{document.execCommand('copy'); done();}catch(e){ msg.textContent='Select the text above and copy it manually.'; } }
+}
+document.addEventListener('keydown', e=>{ if(e.key==='Escape') closePrompt(); });
+
+function copyMovePrompt(id) {
+  const m = MOVES.find(x=>x.id===id);
+  showPrompt(`Prompt for: ${m.t}`,
+    'Paste this into your own AI \u2014 whichever one you use. It carries the constraints, your course context, and this one move. Nothing is sent from here.',
+    movePrompt(id));
+}
+function copyBriefing() {
+  showPrompt('Briefing on this redesign',
+    'Everything the model needs to talk this through with you. Your original assignment isn\u2019t in it, because it was never in this tool.',
+    briefingPrompt());
+}
+
+/* ---------- Step 7: the delegation stress test ---------- */
+function toStress(){ if(!gateChecks().every(c=>c.ok)){ document.getElementById('dfErr').textContent='A few pieces are still open \u2014 they\u2019re listed above.'; return; } go('stress'); }
+const Q16TEXT = { pass:'a submission that would pass', light:'something needing light edits', insufficient:'something clearly insufficient', unsure:'you weren\u2019t sure' };
+function vStress() {
+  const b = score(), st = state.stress;
+  const verdicts = [['pass','It produced something that would pass'],['light','It produced something needing light edits'],['insufficient','It produced something clearly insufficient']];
+  const loop = st.verdict === 'pass';
+  const predicted = state.answers.q16;
+  let calib = '';
+  if (st.verdict && predicted && predicted !== 'unsure') {
+    calib = st.verdict === predicted
+      ? `Back at the diagnostic you predicted ${Q16TEXT[predicted]}. That\u2019s exactly what happened \u2014 your instinct on this is calibrated.`
+      : `Back at the diagnostic you predicted ${Q16TEXT[predicted]}, and what actually came back was ${Q16TEXT[st.verdict]}. That gap is the most useful thing on this screen. It\u2019s also the thing that gets smaller the more assignments you run through here.`;
+  } else if (st.verdict && predicted === 'unsure') {
+    calib = `You said you weren\u2019t sure what would come back. Now you know: ${Q16TEXT[st.verdict]}.`;
+  }
+  return `<div class="fade flex flex-col lg:flex-row gap-8 items-start">${leftCol(b)}
+    <div class="flex-1 min-w-0 space-y-6">
+      <div>${stepper(7)}
+        <h2 class="font-serif text-2xl mb-3">Hand your draft to a model and see what it can do</h2>
+        <p class="text-sm text-muted leading-relaxed max-w-2xl">This is your own writing, so there\u2019s nothing here you can\u2019t paste into a chat window you already use. What comes back tells you which of your moves are load-bearing and which are decoration \u2014 which is not always the ones you\u2019d guess.</p></div>
+      <div class="bg-surface border border-line rounded-lg p-6">
+        <p class="text-xs uppercase tracking-[0.15em] text-muted mb-2">Step one</p>
+        <p class="text-sm leading-relaxed mb-4">Copy the prompt, paste it into your AI, and let it run. It\u2019s instructed to attempt the assignment cold \u2014 no course materials, no local data, no earlier work \u2014 and then report what it couldn\u2019t do.</p>
+        <button onclick="showPrompt('Delegation stress test','Paste this into your own AI. It contains your draft and nothing else.',stressPrompt())" class="bg-well text-white rounded-md px-4 py-2.5 text-sm hover:opacity-90">Copy the stress test prompt</button>
+      </div>
+      <div class="bg-surface border border-line rounded-lg p-6 space-y-5">
+        <p class="text-xs uppercase tracking-[0.15em] text-muted">Step two \u2014 what came back</p>
+        <div><label class="block text-sm font-medium mb-1" for="so">Paste the attempt here</label>
+          <p class="text-xs text-muted mb-2">Optional, but it travels into the export \u2014 useful for whoever picks this up later.</p>
+          <textarea id="so" rows="6" oninput="state.stress.output=this.value;state.touched=true" class="w-full border border-line rounded-md px-3 py-2.5 bg-ground/40 text-sm leading-relaxed">${esc(st.output)}</textarea></div>
+        <fieldset><legend class="text-sm font-medium mb-2">Your call \u2014 would it pass?</legend>
+          <div class="space-y-2">${verdicts.map(([v,l])=>`
+            <label class="flex items-center gap-3 border rounded-md px-3 py-2.5 cursor-pointer transition-colors ${st.verdict===v?'border-well bg-well-soft':'border-line hover:border-muted/40'}">
+              <input type="radio" name="verdict" ${st.verdict===v?'checked':''} onchange="state.stress.verdict='${v}';state.touched=true;render(true)" class="accent-[#37736C]">
+              <span class="text-sm">${l}</span></label>`).join('')}</div></fieldset>
+        <div><label class="block text-sm font-medium mb-1" for="ss">Which parts could it satisfy?</label>
+          <textarea id="ss" rows="3" oninput="state.stress.satisfied=this.value;state.touched=true" class="w-full border border-line rounded-md px-3 py-2.5 bg-ground/40 text-sm leading-relaxed">${esc(st.satisfied)}</textarea></div>
+        <div><label class="block text-sm font-medium mb-1" for="sr">Which parts could it not?</label>
+          <p class="text-xs text-muted mb-2">This is the valuable one. These are the components actually doing the work.</p>
+          <textarea id="sr" rows="3" oninput="state.stress.resisted=this.value;state.touched=true" class="w-full border border-line rounded-md px-3 py-2.5 bg-ground/40 text-sm leading-relaxed">${esc(st.resisted)}</textarea></div>
+      </div>
+      ${calib?`<div class="bg-part-soft/70 border border-line rounded-lg p-5"><p class="text-xs uppercase tracking-[0.15em] text-muted mb-2">Against your prediction</p>
+        <p class="font-serif text-[15px] leading-relaxed">${calib}</p></div>`:''}
+      ${loop?`<div class="bg-open-soft/60 border border-open rounded-lg p-6">
+        <p class="font-serif text-[15px] leading-relaxed mb-3">A model just passed your assignment, which means at least one component is still asking for something it can supply. That\u2019s worth another pass \u2014 and it\u2019s much cheaper to find out now than in March.</p>
+        <p class="text-sm text-muted leading-relaxed mb-4">Look at what you wrote under \u201cwhich parts could it satisfy\u201d and tighten those specifically. The usual fix is requiring evidence only this student could have: their own recording, their own measurements, their own earlier work.</p>
+        <button onclick="go('author')" class="bg-well text-white rounded-md px-4 py-2.5 text-sm hover:opacity-90">Back to the specifics</button></div>`:''}
+      <div class="flex flex-wrap items-center gap-3 pt-2 border-t border-line">
+        <button onclick="go('draft')" class="text-sm text-muted hover:text-ink py-3">Back to the draft</button><div class="flex-1"></div>
+        <button onclick="copyBriefing()" class="text-sm border border-line rounded-md px-4 py-2.5 hover:bg-part-soft">Copy a briefing to talk it through</button>
+        <button onclick="exportDoc(false)" class="bg-well text-white rounded-md px-5 py-2.5 text-sm hover:opacity-90">Export the redesign</button>
+      </div>
+    </div></div>`;
+}
+
+/* =====================================================================
+   EXPORT
+   ===================================================================== */
+function exportDoc(partial) {
+  const c = state.context, L = [];
+  const done = !partial && ['draft','rubric','unit'].includes(state.screen);
+  L.push('='.repeat(60));
+  L.push(`ASSESSMENT REDESIGN \u2014 ${(c.assignment||c.course||state.unit.subject||'Untitled').toUpperCase()}`);
+  L.push('='.repeat(60));
+  L.push(`Generated ${new Date().toLocaleString()}`);
+  if (partial || !done) L.push('IN PROGRESS \u2014 exported before the session was finished.');
+  L.push('');
+  L.push('='.repeat(60)); L.push('PART 1 \u2014 REDESIGN RATIONALE'); L.push('='.repeat(60)); L.push('');
+  L.push('## Context');
+  L.push(`- Subject: ${c.subject||'\u2014'}`);
+  L.push(`- Grade: ${c.grade||'\u2014'}`);
+  L.push(`- Course: ${c.course||'\u2014'}`);
+  L.push(`- Position in course: ${c.position||'\u2014'}`);
+  L.push(`- Student time investment: ${c.time||'\u2014'}`);
+  L.push(`- Learning goal: ${c.goal||'\u2014'}`);
+  L.push('');
+  if (Object.keys(state.answers).length >= 16) {
+    const b = score();
+    L.push('## Headline finding'); L.push(headline(b)); L.push('');
+    L.push('## Structural profile of the original');
+    L.push('(Described, never reproduced \u2014 the original text was never entered.)');
+    Object.keys(DIMS).forEach(k=>{ L.push(`- ${DIMS[k].name}: ${BAND[b[k]].label} \u2014 ${DIMS[k].read[b[k]]}`); });
+    L.push('');
+    L.push('## Designer calibration'); L.push(calibration(b)); L.push('');
+    L.push('## Where this sits in the evidentiary chain');
+    L.push(`- Consumes earlier student work: ${({no:'No',loosely:'Loosely',directly:'Yes, directly'})[state.answers.q11]||'\u2014'}`);
+    L.push(`- Later work depends on it: ${({no:'No',loosely:'Loosely',directly:'Yes, directly'})[state.answers.q12]||'\u2014'}`);
+    L.push('');
+  } else { L.push('_Diagnostic not yet complete._'); L.push(''); }
+  if (state.selected.length) {
+    L.push('## Redesign moves selected');
+    state.selected.forEach(id=>{ const m = MOVES.find(x=>x.id===id);
+      L.push(`### ${m.t}  (serves: ${DIMS[m.p].name})`);
+      L.push(m.s);
+      L.push(`Why it works: ${m.w}`);
+      L.push('');
+    });
+  }
+  L.push('## Delegation stress test');
+  const st = state.stress;
+  if (st.verdict) {
+    const vt = { pass:'Yes \u2014 it produced something that would pass.', light:'Nearly \u2014 it produced something needing light edits.', insufficient:'No \u2014 what it produced was clearly insufficient.' };
+    L.push(`Would an AI attempt pass? ${vt[st.verdict]}`);
+    if (state.answers.q16 && state.answers.q16 !== 'unsure')
+      L.push(`The designer predicted, before redesigning: ${Q16TEXT[state.answers.q16]}.`);
+    if (st.satisfied.trim()) { L.push(''); L.push('Components the model could satisfy:'); L.push(st.satisfied.trim()); }
+    if (st.resisted.trim()) { L.push(''); L.push('Components it structurally could not \u2014 these are the ones doing the work:'); L.push(st.resisted.trim()); }
+    if (st.output.trim()) { L.push(''); L.push('What the model produced:'); L.push('---'); L.push(st.output.trim()); L.push('---'); }
+  } else {
+    L.push('Not yet run. Before distributing, paste Part 2 into a capable model with no other');
+    L.push('context, ask it to attempt the assignment cold, and note which components it can');
+    L.push('satisfy and which it cannot.');
+  }
+  L.push('');
+  if (state.notes.trim()) { L.push('## Notes and open questions'); L.push(state.notes.trim()); L.push(''); }
+  if (state.unit.items.length) {
+    const A = analyzeUnit();
+    L.push('## Unit-level brief');
+    L.push(`Unit: ${state.unit.subject||'\u2014'}${state.unit.duration?` \u00b7 ${state.unit.duration}`:''}`);
+    if (state.unit.goals) L.push(`Purpose: ${state.unit.goals}`);
+    L.push('');
+    L.push('Assessments in order:');
+    A.rows.forEach((r,i)=>{
+      const from = r.consumes ? (state.unit.items.find(o=>o.id===r.consumes)||{}).name : null;
+      L.push(`  ${i+1}. ${r.name||'Untitled'} \u2014 ${r.modality||'modality not set'}${r.alone?'  [STANDS ALONE]':''}`);
+      if (r.desc) L.push(`     ${r.desc}`);
+      if (from) L.push(`     takes input from: ${from}`);
+      if (r.feeds.length) L.push(`     feeds: ${r.feeds.map(f=>(state.unit.items.find(o=>o.id===f)||{}).name||'Untitled').join(', ')}`);
+    });
+    L.push('');
+    const alone = A.rows.filter(r=>r.alone);
+    L.push(alone.length
+      ? `Standing alone: ${alone.map(r=>r.name||'Untitled').join(', ')}. Each defends itself entirely on its own.`
+      : 'Every assessment is linked to something before or after it.');
+    if (A.concentrated) L.push(`Modality concentration: ${A.dn} of ${A.rows.length} arrive as ${A.dominant.toLowerCase()}.`);
+    if (A.pick) L.push(`Highest leverage to redesign first: ${A.pick.name||'Untitled'}.`);
+    L.push('');
+  }
+  L.push('='.repeat(60)); L.push('PART 2 \u2014 STUDENT-FACING DRAFT'); L.push('='.repeat(60)); L.push('');
+  const body = assemble().trim();
+  L.push(body || '_Not yet authored in this session._');
+  L.push('');
+  if (state.rubric) {
+    L.push('## Rubric');
+    L.push(`Weights total ${weightTotal()}%, with ${surfaceTotal()}% on surface features.`);
+    L.push('');
+    state.rubric.criteria.forEach(c=>{
+      L.push(`### ${c.name} \u2014 ${c.weight}%`);
+      c.lv.forEach((t,j)=>L.push(`  ${LEVELS[j]}: ${t}`));
+      L.push('');
+    });
+    L.push('Notes for whoever scores this:');
+    L.push('- On recorded components, score what the student says, not how smoothly they say it.');
+    L.push('  Hesitation and self-correction are signs of live thinking.');
+    L.push('- Performed reflection is fluent, general, and flattering. Genuine reflection is specific,');
+    L.push('  occasionally unflattering, and usually mentions something that didn\u2019t work.');
+    L.push('- When a final product seems disconnected from the checkpoints before it, the checkpoints');
+    L.push('  are the evidence. Ask the question; don\u2019t assume the answer.');
+    L.push('');
+  }
+  if (!done) { L.push('---'); L.push('IN PROGRESS \u2014 this draft is not yet complete and should not be distributed.'); }
+
+  const name = [c.course||c.subject||'Assignment', c.assignment||'Redesign', new Date().toISOString().slice(0,10)]
+    .join('_').replace(/\s+/g,'').replace(/[^A-Za-z0-9_\-]/g,'');
+  const blob = new Blob([L.join('\n')], {type:'text/markdown'});
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob); a.download = name + '.md'; a.click();
+  URL.revokeObjectURL(a.href);
+  if (done) state.touched = false;
+}
+
+render();
+</script>
+</body>
+</html>
